@@ -1,0 +1,81 @@
+<mujoco model="pick_place_cell">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10"/>
+  <visual>
+    <global offwidth="640" offheight="480"/>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6"/>
+    <map znear="0.01" zfar="20"/>
+  </visual>
+  <default>
+    <geom friction="1 0.01 0.001" solref="0.004 1"/>
+    <default class="wire">
+      <geom type="capsule" size="0.009" mass="0.025"
+            fromto="-0.09 0 0 0.09 0 0" condim="6"/>
+    </default>
+    <default class="crate">
+      <geom type="box" rgba="0.19 0.38 0.5 1"/>
+    </default>
+  </default>
+  <asset>
+    <model name="arm" file="../assets/universal_robots_ur5e/ur5e.xml"/>
+    <texture name="floor" type="2d" builtin="checker" rgb1="0.22 0.25 0.28"
+             rgb2="0.28 0.31 0.34" width="256" height="256"/>
+    <material name="floor" texture="floor" texrepeat="4 4" reflectance="0.1"/>
+  </asset>
+  <worldbody>
+    <light pos="0 -1 3" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="1 1 2.5" dir="-0.3 -0.3 -1" diffuse="0.5 0.5 0.5"/>
+    <geom name="floor" type="plane" size="3 3 0.1" material="floor"/>
+    <body name="table">
+      <geom name="table_top" type="box" pos="0 0 0.72" size="0.9 0.65 0.04"
+            rgba="0.7 0.67 0.59 1"/>
+      <geom type="box" pos="-0.78 -0.53 0.34" size="0.04 0.04 0.34" rgba="0.25 0.28 0.3 1"/>
+      <geom type="box" pos="0.78 -0.53 0.34" size="0.04 0.04 0.34" rgba="0.25 0.28 0.3 1"/>
+      <geom type="box" pos="-0.78 0.53 0.34" size="0.04 0.04 0.34" rgba="0.25 0.28 0.3 1"/>
+      <geom type="box" pos="0.78 0.53 0.34" size="0.04 0.04 0.34" rgba="0.25 0.28 0.3 1"/>
+    </body>
+    <frame pos="0 0.38 0.76" quat="0 0 0 1">
+      <attach model="arm" body="base" prefix="robot_"/>
+    </frame>
+    <!-- TODO(pawel): confirm camera names cam0–cam3. -->
+    <camera name="cam0" pos="1.6 -1.9 2.2" xyaxes="0.765 0.644 0 -0.365 0.434 0.824" fovy="48"/>
+    <camera name="cam1" pos="-1.6 -1.9 2.2" xyaxes="0.765 -0.644 0 0.365 0.434 0.824" fovy="48"/>
+    <camera name="cam2" pos="0 -0.15 2.9" quat="1 0 0 0" fovy="52"/>
+    <camera name="cam3" pos="1.7 1.8 2.1" xyaxes="-0.727 0.687 0 -0.353 -0.374 0.857" fovy="50"/>
+    <body name="wire0" pos="-0.34 -0.42 0.769" childclass="wire">
+      <freejoint/><geom name="wire0" rgba="0.9 0.12 0.1 1"/>
+    </body>
+    <body name="wire1" pos="-0.34 -0.32 0.769" euler="0 0 0.15" childclass="wire">
+      <freejoint/><geom name="wire1" rgba="0.1 0.65 0.2 1"/>
+    </body>
+    <body name="wire2" pos="-0.34 -0.22 0.769" euler="0 0 -0.15" childclass="wire">
+      <freejoint/><geom name="wire2" rgba="0.12 0.3 0.95 1"/>
+    </body>
+    <body name="wire3" pos="-0.34 -0.12 0.769" childclass="wire">
+      <freejoint/><geom name="wire3" rgba="0.95 0.72 0.05 1"/>
+    </body>
+    <body name="wire4" pos="-0.34 -0.02 0.769" euler="0 0 0.15" childclass="wire">
+      <freejoint/><geom name="wire4" rgba="0.65 0.15 0.85 1"/>
+    </body>
+    <body name="wire5" pos="-0.34 0.08 0.769" euler="0 0 -0.15" childclass="wire">
+      <freejoint/><geom name="wire5" rgba="0.05 0.8 0.85 1"/>
+    </body>
+    <body name="wire6" pos="-0.34 0.18 0.769" childclass="wire">
+      <freejoint/><geom name="wire6" rgba="1 0.4 0.06 1"/>
+    </body>
+    <body name="crate0" pos="0.38 -0.33 0.76" childclass="crate">
+      <geom name="crate0_bottom" pos="0 0 0.01" size="0.18 0.13 0.01"/>
+      <geom pos="-0.17 0 0.07" size="0.01 0.13 0.05"/>
+      <geom pos="0.17 0 0.07" size="0.01 0.13 0.05"/>
+      <geom pos="0 -0.12 0.07" size="0.16 0.01 0.05"/>
+      <geom pos="0 0.12 0.07" size="0.16 0.01 0.05"/>
+    </body>
+    <body name="crate1" pos="0.38 0.06 0.76" childclass="crate">
+      <geom name="crate1_bottom" pos="0 0 0.01" size="0.18 0.13 0.01"/>
+      <geom pos="-0.17 0 0.07" size="0.01 0.13 0.05"/>
+      <geom pos="0.17 0 0.07" size="0.01 0.13 0.05"/>
+      <geom pos="0 -0.12 0.07" size="0.16 0.01 0.05"/>
+      <geom pos="0 0.12 0.07" size="0.16 0.01 0.05"/>
+    </body>
+  </worldbody>
+</mujoco>

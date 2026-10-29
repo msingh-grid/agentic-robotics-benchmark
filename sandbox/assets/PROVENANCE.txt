@@ -1,0 +1,18 @@
+Source: https://github.com/google-deepmind/mujoco_menagerie
+Commit: f3b6013629c7b94f8ee93fd977b161fa8350f9bc
+
+universal_robots_ur5e/
+  ur5e.xml and all referenced OBJ meshes.
+  BSD-3-Clause; original LICENSE retained alongside the model.
+  Derived upstream from ros-industrial/universal_robot (ur_e_description).
+  Local changes: add the Robotiq model asset and attach it at attachment_site
+  with the gripper_ prefix; use its elliptic cone and impratio=10 options.
+  All other robot parameters and meshes are unchanged.
+
+robotiq_2f85/
+  2f85.xml and all referenced STL meshes, unchanged.
+  BSD-2-Clause; original LICENSE retained alongside the model.
+  Derived upstream from ros-industrial/robotiq
+  (robotiq_2f_85_gripper_visualization).
+
+Only model files, meshes and licenses are vendored. No runtime downloads.
