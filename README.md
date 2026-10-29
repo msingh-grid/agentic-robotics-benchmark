@@ -11,7 +11,7 @@ Brief: [`docs/Agentic Robotics Benchmark - Team Brief.pdf`](docs/Agentic%20Robot
 
 ## Status
 
-Phase 1 · S1: Python and ROS 2 environments with headless smoke tests. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
+Phase 1 · S2: a headless MuJoCo cell with UR5e + Robotiq 2F-85, seven rigid wires, two open crates and four RGB/depth cameras. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
 
 ## Getting started
 
@@ -29,6 +29,21 @@ The tests write a one-box render to `out/smoke.png` and exchange a ROS message w
 On a Mac, regenerate and inspect the smoke image with `bash scripts/setup.sh && uv run pytest tests/test_env_smoke.py && open out/smoke.png`.
 
 RViz is optional and is not used by the tests. Install it with `pixi install --locked --manifest-path ros/pixi.toml --environment viz`. CI installs both `default` and `viz` on both platforms.
+
+## Cell preview
+
+Run `uv run python scripts/render_cell.py` to write the four views to `out/cell.png`.
+On a Mac, regenerate and inspect with `bash scripts/setup.sh && uv run python scripts/render_cell.py && open out/cell.png`.
+Check the attached gripper, seven distinct wires, both open crates and the four camera views.
+Linux uses EGL with an in-process OSMesa fallback; set `MUJOCO_GL=osmesa` to force software rendering.
+No display is required. The same renderer serves the smoke test and `World.render()`.
+
+`World` starts after two seconds of idle settling at simulation time zero. `step()` advances 2 ms.
+Body and camera setters accept a position in metres and a quaternion in **wxyz** order.
+`render("cam0")` returns RGB `uint8` (480×640×3) and optical-axis depth in metres `float32` (480×640), both with a top-left origin.
+`seed(n)` resets a private NumPy generator; this step does not randomize the layout.
+Robot assets are vendored with original licenses and a pinned upstream revision in `sandbox/assets/PROVENANCE.txt`.
+Scripted picking and ROS publication remain later Phase 1 steps.
 
 ## Contributing
 

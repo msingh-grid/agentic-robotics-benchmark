@@ -1,20 +1,15 @@
 import ctypes
-from importlib.util import module_from_spec, spec_from_file_location
-from pathlib import Path
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
+from sandbox.sim.render import cgl_context
+
 
 @pytest.mark.parametrize("accelerated", [True, False])
 def test_cgl_context_selection_and_cleanup(monkeypatch, accelerated):
-    spec = spec_from_file_location(
-        "render_smoke", Path(__file__).resolve().parents[1] / "scripts" / "render_smoke.py"
-    )
-    render_smoke = module_from_spec(spec)
-    spec.loader.exec_module(render_smoke)
     requests = []
 
     def choose_pixel_format(attributes, pixel, count):
@@ -44,7 +39,7 @@ def test_cgl_context_selection_and_cleanup(monkeypatch, accelerated):
     )
     monkeypatch.setitem(sys.modules, "mujoco.cgl", SimpleNamespace(cgl=cgl))
     with pytest.raises(ValueError, match="render failed"):
-        with render_smoke.cgl_context():
+        with cgl_context():
             assert cgl.CGLSetCurrentContext.call_args.args[0].value == 2
             raise ValueError("render failed")
     assert len(requests) == (1 if accelerated else 2)
