@@ -1,0 +1,18 @@
+# pixi
+.pixi/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated output
+out/
+results/
+*.mcap
+
+# OS
+.DS_Store
+
+# Local planning
+.plan/

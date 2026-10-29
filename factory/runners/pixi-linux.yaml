@@ -1,0 +1,11 @@
+description: Ubuntu 24.04 sandbox. The repo's scripts/setup.sh installs pixi and the project environment; safe to rerun.
+setupCommands:
+  - bash agentic-robotics-benchmark/scripts/setup.sh
+instanceShape:
+  vcpus: 8
+  memoryGb: 16
+platform:
+  os: linux
+  arch: x86_64
+  linux:
+    dockerImage: buildpack-deps:noble
