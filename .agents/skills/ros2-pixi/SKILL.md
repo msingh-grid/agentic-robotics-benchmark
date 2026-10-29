@@ -36,3 +36,14 @@ ROS 2 is not on PyPI, so uv can't install it. On a Mac the only native ROS 2 is 
 | macOS | leave unset (uses `cgl`) |
 
 Set it in test fixtures or the CI workflow environment, not inside library code.
+
+On Linux, MuJoCo needs system render libraries (`libosmesa6`, `libegl1`, `libgl1`). These are the only system packages allowed: CI installs them with `apt-get`, and `scripts/setup.sh` installs them when missing and root or passwordless sudo is available. macOS needs nothing.
+
+## Talking between the two environments
+
+The sim (uv) and the ROS bridge (pixi) talk over **ZeroMQ + msgpack** on `ipc://` sockets in a per-run temp directory:
+- state stream: PUB/SUB at sim rate (joints, camera frames, flow state, sim time)
+- commands and actions: REQ/REP
+- ground truth: a **separate** REP socket, file mode 0600, opened only by grading code. The bridge must never connect to it.
+
+`pyzmq` and `msgpack` are installed in both environments (`uv add pyzmq msgpack`; `pyzmq`, `msgpack-python` in `ros/pixi.toml`).
