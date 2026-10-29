@@ -88,7 +88,7 @@ def test_ros_talker_listener(tmp_path, ros_domain):
     payload = f"{os.getpid()}-{tmp_path.name}"
     processes = []
     logs = {}
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + 60
     failure = None
     try:
         for role in ("listener", "talker"):
@@ -121,7 +121,7 @@ def test_ros_talker_listener(tmp_path, ros_domain):
                 break
             time.sleep(0.05)
         else:
-            failure = "No ROS message received within 20 s"
+            failure = "No ROS message received within 60 s"
     finally:
         for process in reversed(processes):
             stop_process_group(process)

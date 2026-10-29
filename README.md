@@ -24,7 +24,7 @@ uv run pytest
 
 Works natively on Apple Silicon Macs and on Linux x86_64.
 
-The tests write a one-box render to `out/smoke.png` and exchange a ROS message within 20 seconds. Linux tests try EGL, then OSMesa if EGL fails; macOS uses native CGL with Apple's software renderer when no accelerated pixel format is available. Linux setup installs only the three required system render libraries and needs root or passwordless sudo if they are missing.
+The tests write a one-box render to `out/smoke.png` and exchange a ROS message within 60 seconds (the first ROS start on a fresh Mac is slow while macOS checks the new libraries; setup does that once up front). Linux tests try EGL, then OSMesa if EGL fails; macOS uses native CGL with Apple's software renderer when no accelerated pixel format is available. Linux setup installs only the three required system render libraries and needs root or passwordless sudo if they are missing.
 
 On a Mac, regenerate and inspect the smoke image with `bash scripts/setup.sh && uv run pytest tests/test_env_smoke.py && open out/smoke.png`.
 

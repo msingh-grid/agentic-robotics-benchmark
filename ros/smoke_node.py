@@ -32,7 +32,7 @@ def main():
             publisher = node.create_publisher(String, TOPIC, 10)
         else:
             node.create_subscription(String, TOPIC, on_message, 10)
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if args.role == "talker":
                 publisher.publish(String(data=args.payload))
@@ -40,7 +40,7 @@ def main():
             if received:
                 return
         if args.role == "listener":
-            raise TimeoutError("No matching ROS smoke message received within 20 s")
+            raise TimeoutError("No matching ROS smoke message received within 60 s")
     finally:
         node.destroy_node()
         rclpy.shutdown()
