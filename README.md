@@ -11,18 +11,24 @@ Brief: [`docs/Agentic Robotics Benchmark - Team Brief.pdf`](docs/Agentic%20Robot
 
 ## Status
 
-Phase 0: repo and factory setup. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
+Phase 1 · S1: Python and ROS 2 environments with headless smoke tests. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
 
 ## Getting started
 
-Python is managed with [uv](https://docs.astral.sh/uv/). ROS 2 isn't on PyPI, so it lives in a separate [pixi](https://pixi.sh) environment under `ros/` (added in Phase 1).
+Python is managed with [uv](https://docs.astral.sh/uv/). ROS 2 isn't on PyPI, so it lives in a separate [pixi](https://pixi.sh) environment under `ros/`. Both environments install from committed lockfiles.
 
 ```bash
-bash scripts/setup.sh   # installs uv (and pixi once ros/ exists), then the environments
+bash scripts/setup.sh
 uv run pytest
 ```
 
 Works natively on Apple Silicon Macs and on Linux x86_64.
+
+The tests write a one-box render to `out/smoke.png` and exchange a ROS message within 20 seconds. Linux tests try EGL, then OSMesa if EGL fails; macOS uses its native CGL backend. Linux setup installs only the three required system render libraries and needs root or passwordless sudo if they are missing.
+
+On a Mac, regenerate and inspect the smoke image with `bash scripts/setup.sh && uv run pytest tests/test_env_smoke.py && open out/smoke.png`.
+
+RViz is optional and is not used by the tests. Install it with `pixi install --locked --manifest-path ros/pixi.toml --environment viz`. CI installs both `default` and `viz` on both platforms.
 
 ## Contributing
 
