@@ -11,6 +11,18 @@ ros-jazzy-rosbag2-storage-mcap = "*"
 ros-jazzy-sensor-msgs-py = "*"
 pyzmq = "*"
 msgpack-python = "*"
+ros-jazzy-rosidl-default-generators = ">=1.6.1,<2"
+ros-jazzy-ament-cmake = ">=2.5.6,<3"
+cmake = ">=4.4.5,<5"
+ninja = ">=1.13.2,<2"
+c-compiler = ">=2.0.0,<3"
+cxx-compiler = ">=2.0.0,<3"
+numpy = ">=2.5.4,<3"
+pyyaml = ">=6.0.3,<7"
+[tasks]
+build-interfaces = "bash build_interfaces.sh"
+bridge = "bash run.sh python bridge_node.py"
+ros-cli = "bash run.sh ros2"
 
 [feature.viz.dependencies]
 ros-jazzy-rviz2 = "*"

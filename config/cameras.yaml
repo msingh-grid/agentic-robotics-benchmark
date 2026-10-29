@@ -1,0 +1,15 @@
+# Configured camera mount poses: metres and wxyz quaternions (local -Z looks forward).
+# TODO(pawel): confirm camera and frame names.
+cameras:
+  cam0:
+    position: [1.6, -1.9, 2.2]
+    quaternion: [0.8315111012442319, 0.437146139724212, 0.1595043764011664, 0.3033989039873076]
+  cam1:
+    position: [-1.6, -1.9, 2.2]
+    quaternion: [0.8315111012442319, 0.437146139724212, -0.1595043764011664, -0.3033989039873076]
+  cam2:
+    position: [0, -0.15, 2.9]
+    quaternion: [1, 0, 0, 0]
+  cam3:
+    position: [1.7, 1.8, 2.1]
+    quaternion: [0.3216161019270932, 0.1820811925740814, 0.4577868299114797, 0.8086041928234232]

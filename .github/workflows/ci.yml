@@ -31,4 +31,5 @@ jobs:
           sudo apt-get install -y libosmesa6 libegl1 libgl1
           echo "MUJOCO_GL=egl" >> "$GITHUB_ENV"
       - run: uv sync --locked
+      - run: pixi run --locked --manifest-path ros/pixi.toml build-interfaces
       - run: uv run pytest
