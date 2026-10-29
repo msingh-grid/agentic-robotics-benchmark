@@ -1,5 +1,7 @@
 # pixi
 .pixi/
+ros/build/
+ros/install/
 
 # Python
 .venv/
