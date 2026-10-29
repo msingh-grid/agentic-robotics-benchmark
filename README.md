@@ -129,6 +129,29 @@ A RobotModel display also needs a URDF/robot_description, which S4 does not add.
 There is no scene or robot-motion change in this step; the cell preview command above
 still regenerates the same image.
 
+## Scripted pick and place
+
+`PickPlaceFlow(World(seed=n)).run("wire0", "crate0")` runs a pick synchronously.
+Import `PickPlaceFlow` from `sandbox.sim.pick_place` and `World` from `sandbox.sim.world`.
+The fingers grip through physics contacts; no objects are attached or teleported.
+The result means **commands completed**, not that a grasp or placement succeeded.
+Only tests inspect the physical outcome.
+
+For an event loop, call `flow.start(wire, crate)`, then `flow.step()` until `flow.result is not None`.
+Each `step()` advances physics once (2 ms); do not also call `World.step()` for that tick.
+The `on_state` callback receives a `FlowState` at initialization and each transition; `flow.state` is also readable.
+The flow has no ROS dependency. The server/bridge integration belongs to S4.
+
+`Perception(world).estimate_pose(name)` uses the world's explicitly seeded generator.
+It adds 0.5 mm position noise and 0.002 rad yaw noise in camera coordinates, then transforms through `config/cameras.yaml`.
+Those configured extrinsics initially match the real cameras; changing them biases estimates without moving the cameras.
+
+Run `uv run python scripts/render_episode.py --seed 0 --wire wire0 --crate crate0` for a two-view contact sheet (`out/episode.png`) and a 2×-speed GIF (`out/episode.gif`).
+On a Mac, regenerate with `bash scripts/setup.sh && uv run python scripts/render_episode.py --seed 0 --wire wire0 --crate crate0 && open out/episode.png out/episode.gif`.
+Check that the red wire lifts between the pads, travels above the crate walls and settles inside crate0 after release.
+`uv run pytest tests/test_ik.py tests/test_perception.py tests/test_pick_place.py` checks downward reach, configured calibration, 20 seeded placements, determinism and command-only results.
+>>>>>>> origin/main
+
 ## Contributing
 
 Read [`AGENTS.md`](AGENTS.md) first. It holds the rules for humans and coding agents alike.
