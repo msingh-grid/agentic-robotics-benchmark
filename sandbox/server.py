@@ -13,7 +13,7 @@ import mujoco
 import numpy as np
 import zmq
 
-from sandbox.sim.render import render_scene
+from sandbox.sim.render import SceneRenderer
 from sandbox.sim.world import CAMERAS, World
 
 STATE_HZ = 50
@@ -88,31 +88,32 @@ class SimServer:
     def render_cameras(self):
         data = mujoco.MjData(self.world.model)
         try:
-            while not self.stop.is_set():
-                deadline = time.monotonic() + 1 / CAMERA_HZ
-                with self.lock:
-                    mujoco.mj_copyData(data, self.world.model, self.world.data)
-                stamp = round(data.time * 1e9)
-                for camera in CAMERAS:
-                    rgb, depth = render_scene(self.world.model, data, camera)
-                    height, width = depth.shape
-                    focal = height / (2 * math.tan(math.radians(
-                        self.world.model.camera(camera).fovy[0],
-                    ) / 2))
-                    frame = {
-                        "time_ns": stamp,
-                        "name": camera,
-                        "width": width,
-                        "height": height,
-                        "focal": focal,
-                        "rgb": rgb.tobytes(),
-                        "depth": depth.astype("<f4", copy=False).tobytes(),
-                    }
-                    try:
-                        self.frames.put_nowait(frame)
-                    except queue.Full:
-                        pass
-                self.stop.wait(max(0, deadline - time.monotonic()))
+            with SceneRenderer(self.world.model) as renderer:
+                while not self.stop.is_set():
+                    deadline = time.monotonic() + 1 / CAMERA_HZ
+                    with self.lock:
+                        mujoco.mj_copyData(data, self.world.model, self.world.data)
+                    stamp = round(data.time * 1e9)
+                    for camera in CAMERAS:
+                        rgb, depth = renderer.render(data, camera)
+                        height, width = depth.shape
+                        focal = height / (2 * math.tan(math.radians(
+                            self.world.model.camera(camera).fovy[0],
+                        ) / 2))
+                        frame = {
+                            "time_ns": stamp,
+                            "name": camera,
+                            "width": width,
+                            "height": height,
+                            "focal": focal,
+                            "rgb": rgb.tobytes(),
+                            "depth": depth.astype("<f4", copy=False).tobytes(),
+                        }
+                        try:
+                            self.frames.put_nowait(frame)
+                        except queue.Full:
+                            pass
+                    self.stop.wait(max(0, deadline - time.monotonic()))
         except Exception as error:
             self.render_error = error
             self.stop.set()

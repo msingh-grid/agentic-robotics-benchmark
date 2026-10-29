@@ -3,8 +3,31 @@ from pathlib import Path
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 
+from sandbox.sim.render import SceneRenderer
+from sandbox.sim.world import CAMERAS, World
+
+
+
+def test_reused_renderer_preserves_camera_pixels_and_refreshes_scene():
+    world = World(seed=42)
+    expected = {camera: world.render(camera) for camera in CAMERAS}
+    with SceneRenderer(world.model) as renderer:
+        for camera in CAMERAS:
+            actual = renderer.render(world.data, camera)
+            for image, baseline in zip(actual, expected[camera]):
+                np.testing.assert_array_equal(image, baseline)
+        segmentation = renderer.render(world.data, "cam2", segmentation=True)
+        assert segmentation.shape == (480, 640, 2)
+        rgb, depth = renderer.render(world.data, "cam2")
+        np.testing.assert_array_equal(rgb, expected["cam2"][0])
+        np.testing.assert_array_equal(depth, expected["cam2"][1])
+        world.set_body_pose("wire0", [0, -0.15, 1.0], [1, 0, 0, 0])
+        moved_rgb, moved_depth = renderer.render(world.data, "cam2")
+        assert not np.array_equal(moved_rgb, rgb)
+        assert not np.array_equal(moved_depth, depth)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux headless backends")

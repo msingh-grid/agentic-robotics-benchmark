@@ -86,6 +86,8 @@ Full 640×480 rendering runs independently of physics, with a bounded four-frame
 overload drops frames rather than blocking commands. Camera stamps identify the copied
 simulation state, not the later render completion time. These conservative camera rates
 keep the existing full-resolution software-rendered scene usable headlessly.
+The camera worker retains one native GL context and uploaded model across views and samples,
+instead of rebuilding them for each frame on software-rendered Macs.
 
 `config/cameras.yaml` is the small shared schema for the S3 integration:
 `cameras.<name>.position` is world XYZ in metres and `quaternion` is unit **wxyz**.
