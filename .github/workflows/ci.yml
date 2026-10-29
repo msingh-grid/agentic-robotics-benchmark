@@ -19,5 +19,16 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
+      - uses: prefix-dev/setup-pixi@v0.9.3
+        with:
+          manifest-path: ros/pixi.toml
+          environments: default viz
+          locked: true
+      - name: Install Linux render libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libosmesa6 libegl1 libgl1
+          echo "MUJOCO_GL=egl" >> "$GITHUB_ENV"
       - run: uv sync --locked
       - run: uv run pytest

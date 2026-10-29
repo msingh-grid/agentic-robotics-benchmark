@@ -19,7 +19,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 uv --version
 if [ -f "$REPO_ROOT/pyproject.toml" ]; then
-  (cd "$REPO_ROOT" && uv sync)
+  (cd "$REPO_ROOT" && uv sync --locked)
 else
   echo "No pyproject.toml yet; skipping Python environment."
 fi
@@ -30,7 +30,30 @@ if [ -f "$REPO_ROOT/ros/pixi.toml" ]; then
     curl -fsSL https://pixi.sh/install.sh | PIXI_NO_PATH_UPDATE=1 bash
   fi
   pixi --version
-  pixi install --manifest-path "$REPO_ROOT/ros/pixi.toml"
+  pixi install --locked --manifest-path "$REPO_ROOT/ros/pixi.toml"
+  # Load ROS once so macOS checks the freshly installed libraries now, not during the first test.
+  pixi run --locked --manifest-path "$REPO_ROOT/ros/pixi.toml" python -c "import rclpy"
 else
   echo "No ros/pixi.toml yet; skipping ROS environment."
+fi
+
+if [ "$(uname -s)" = Linux ]; then
+  missing_render_libs=()
+  for package in libosmesa6 libegl1 libgl1; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
+      missing_render_libs+=("$package")
+    fi
+  done
+  if [ "${#missing_render_libs[@]}" -gt 0 ]; then
+    if [ "$(id -u)" -eq 0 ]; then
+      apt-get update
+      apt-get install -y "${missing_render_libs[@]}"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      sudo -n apt-get update
+      sudo -n apt-get install -y "${missing_render_libs[@]}"
+    else
+      printf 'Missing render libraries: %s. Ask an administrator to install them.\n' "${missing_render_libs[*]}" >&2
+      exit 1
+    fi
+  fi
 fi

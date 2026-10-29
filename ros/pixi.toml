@@ -1,0 +1,20 @@
+[workspace]
+name = "agentic-robotics-ros"
+channels = ["robostack-jazzy", "conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[dependencies]
+ros-jazzy-ros-base = "*"
+ros-jazzy-rclpy = "*"
+ros-jazzy-tf2-ros-py = "*"
+ros-jazzy-rosbag2-storage-mcap = "*"
+ros-jazzy-sensor-msgs-py = "*"
+pyzmq = "*"
+msgpack-python = "*"
+
+[feature.viz.dependencies]
+ros-jazzy-rviz2 = "*"
+
+[environments]
+default = { solve-group = "ros" }
+viz = { features = ["viz"], solve-group = "ros" }
