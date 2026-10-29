@@ -11,7 +11,7 @@ Brief: [`docs/Agentic Robotics Benchmark - Team Brief.pdf`](docs/Agentic%20Robot
 
 ## Status
 
-Phase 1 · S4: a headless MuJoCo cell with a ROS 2 telemetry bridge and a command-only pick/place stub. The UR5e + Robotiq 2F-85, seven rigid wires, two open crates and four RGB/depth cameras remain unchanged. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
+Phase 1 · S4: a headless MuJoCo cell with ROS 2 telemetry and real scripted pick/place actions. The UR5e + Robotiq 2F-85, seven rigid wires, two open crates and four RGB/depth cameras use the S3 flow. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
 
 ## Getting started
 
@@ -43,7 +43,7 @@ Body and camera setters accept a position in metres and a quaternion in **wxyz**
 `render("cam0")` returns RGB `uint8` (480×640×3) and optical-axis depth in metres `float32` (480×640), both with a top-left origin.
 `seed(n)` resets a private NumPy generator; this step does not randomize the layout.
 Robot assets are vendored with original licenses and a pinned upstream revision in `sandbox/assets/PROVENANCE.txt`.
-Scripted picking remains S3 work; the S4 action does not move the arm.
+The S4 ROS action drives the S3 scripted pick-and-place flow.
 
 ## Sim server and ROS bridge (S4)
 
@@ -89,13 +89,14 @@ keep the existing full-resolution software-rendered scene usable headlessly.
 The camera worker retains one native GL context and uploaded model across views and samples,
 instead of rebuilding them for each frame on software-rendered Macs.
 
-`config/cameras.yaml` is the small shared schema for the S3 integration:
+`config/cameras.yaml` is shared by S3 perception and S4 camera TF:
 `cameras.<name>.position` is world XYZ in metres and `quaternion` is unit **wxyz**.
 It describes a configured MuJoCo/OpenGL mount frame (local -Z forward, +Y up).
 The bridge publishes `world → camN → camN_optical`; the optical frame is +Z forward,
 +X right, +Y down. It reads only this configuration for camera TF, never true extrinsics.
 The defaults equal the S2 mounting poses, but changing this file must not move the sim's
-cameras. Restart the bridge after a config edit. All public names still need confirmation
+cameras. Restart both server and bridge after a config edit. Pass the same `--camera-config`
+path to both when using a custom file. All public names still need confirmation
 with the real stack (`TODO(pawel)` in the implementation).
 
 Public packets contain only sim time, named robot joints/link transforms, rendered RGB
@@ -112,11 +113,16 @@ pixi run --locked --manifest-path ros/pixi.toml ros-cli action send_goal /pick_p
 ```
 
 The goal has `object_id` and `crate_id`; the result has `success` and `message`;
-feedback has `state`. **The server currently returns command-only stub success without
-moving the arm.** Flow changes from `IDLE` to `DONE`, and diagnostics warns about the stub.
-Unknown IDs abort, empty IDs are rejected, and unavailable commands abort after a bounded
-timeout. Cancellation is not supported by the stub. Follow-up: wire the explicit server
-TODO to S3's `PickPlaceFlow`; do not use action success to grade physical placement.
+feedback has `state`. The server calls `PickPlaceFlow.start()` for each goal and advances
+the flow once per 2 ms physics tick. Results wait for `flow.result`, which means commands
+completed, never verified placement. State callbacks drive public flow state and action
+feedback through `APPROACH`, `GRASP`, `LIFT`, `TRANSPORT`, `PLACE`, `RELEASE`, and `DONE`.
+Idle ticks refresh gravity compensation after a pick so the arm holds its final target.
+Unknown IDs abort; empty or concurrent goals are rejected. A missing server fails within
+2 seconds; an accepted command has a 30-second response timeout for the 15.5-second flow.
+Cancellation is not supported, and stopping the client does not stop the active sim flow.
+The REP command reply is deferred until completion while sensor publication continues.
+Do not use action success to grade physical placement.
 
 On a Mac, run `bash scripts/setup.sh && uv run pytest` or the focused
 `uv run pytest tests/test_bridge.py -v -s`. This test leases a unique domain, starts the
@@ -126,8 +132,20 @@ action results, and sim disconnection. It tears down every process.
 Use the terminal commands above to check rates manually; RViz is optional.
 If RViz works, select fixed frame `world`, then add TF, Image and PointCloud2 displays.
 A RobotModel display also needs a URDF/robot_description, which S4 does not add.
-There is no scene or robot-motion change in this step; the cell preview command above
-still regenerates the same image.
+The cell geometry is unchanged; the ROS action now moves the arm through the existing flow.
+
+To regenerate proof from the actual ROS action on a Mac, start a fresh server above with
+`--seed 0` and its bridge. Use the same `RUN_DIR` and ROS variables, then run:
+
+```bash
+uv run python scripts/render_ros_episode.py --run-dir "$RUN_DIR" --wire wire0 --crate crate0
+open out/ros_episode.png out/ros_episode.gif
+```
+
+The helper sends a real ROS goal and captures only public camera packets, paired to
+their simulation-time flow states. The contact sheet shows idle, lift, transport and done
+in cam0/cam2; the GIF shows all four cameras. Check that the red wire lifts between the
+pads, travels to crate0, and is released. Command output is in `out/ros_episode_action.log`.
 
 ## Scripted pick and place
 
@@ -140,7 +158,7 @@ Only tests inspect the physical outcome.
 For an event loop, call `flow.start(wire, crate)`, then `flow.step()` until `flow.result is not None`.
 Each `step()` advances physics once (2 ms); do not also call `World.step()` for that tick.
 The `on_state` callback receives a `FlowState` at initialization and each transition; `flow.state` is also readable.
-The flow has no ROS dependency. The server/bridge integration belongs to S4.
+The flow has no ROS dependency. The S4 server/bridge drives the same event-loop API.
 
 `Perception(world).estimate_pose(name)` uses the world's explicitly seeded generator.
 It adds 0.5 mm position noise and 0.002 rad yaw noise in camera coordinates, then transforms through `config/cameras.yaml`.
@@ -150,7 +168,6 @@ Run `uv run python scripts/render_episode.py --seed 0 --wire wire0 --crate crate
 On a Mac, regenerate with `bash scripts/setup.sh && uv run python scripts/render_episode.py --seed 0 --wire wire0 --crate crate0 && open out/episode.png out/episode.gif`.
 Check that the red wire lifts between the pads, travels above the crate walls and settles inside crate0 after release.
 `uv run pytest tests/test_ik.py tests/test_perception.py tests/test_pick_place.py` checks downward reach, configured calibration, 20 seeded placements, determinism and command-only results.
->>>>>>> origin/main
 
 ## Contributing
 

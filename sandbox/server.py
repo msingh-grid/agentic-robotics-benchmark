@@ -14,6 +14,8 @@ import numpy as np
 import zmq
 
 from sandbox.sim.render import SceneRenderer
+from sandbox.sim.perception import CAMERA_CONFIG, Perception
+from sandbox.sim.pick_place import FlowState, PickPlaceFlow
 from sandbox.sim.world import CAMERAS, World
 
 STATE_HZ = 50
@@ -57,7 +59,7 @@ def robot_state(world):
 
 
 class SimServer:
-    def __init__(self, run_dir, seed):
+    def __init__(self, run_dir, seed, camera_config=CAMERA_CONFIG):
         self.world = World(seed=seed)
         self.run_dir = Path(run_dir).resolve()
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -70,20 +72,33 @@ class SimServer:
         self.lock = threading.Lock()
         self.frames = queue.Queue(maxsize=len(CAMERAS))
         self.render_error = None
-        self.flow = "IDLE"
+        self.flow = PickPlaceFlow(
+            self.world, perception=Perception(self.world, config_path=camera_config),
+            on_state=self.on_state,
+        )
         self.worker = threading.Thread(target=self.render_cameras, daemon=True)
+
+    def on_state(self, state):
+        self.flow_state = state.value
 
     def command(self, command):
         if not isinstance(command, dict) or command.get("op") != "pick_place":
             return {"success": False, "message": "Unknown command"}
-        if (
-            command.get("object_id") not in [f"wire{i}" for i in range(7)]
-            or command.get("crate_id") not in ("crate0", "crate1")
-        ):
-            return {"success": False, "message": "Unknown object or crate"}
-        # TODO: wire to PickPlaceFlow when scripted picking lands; this stub never moves the arm.
-        self.flow = "DONE"
-        return {"success": True, "message": "Stub: commands accepted; no robot motion"}
+        try:
+            self.flow.start(command.get("object_id"), command.get("crate_id"))
+        except (ValueError, RuntimeError, TypeError) as error:
+            return {"success": False, "message": str(error)}
+        return None
+
+    def step(self):
+        if self.flow.state in (FlowState.IDLE, FlowState.DONE):
+            if self.flow.state == FlowState.DONE:
+                # Bias forces change as the arm settles; stale compensation moves an idle arm.
+                dofs = self.flow.ik.dofs
+                self.world.data.qfrc_applied[dofs] = self.world.data.qfrc_bias[dofs]
+            self.world.step()
+        else:
+            self.flow.step()
 
     def render_cameras(self):
         data = mujoco.MjData(self.world.model)
@@ -128,27 +143,37 @@ class SimServer:
         self.command_socket.bind(f"ipc://{self.run_dir / 'commands.sock'}")
         self.worker.start()
         tick = 0
+        pending_result = False
         deadline = time.monotonic()
         try:
             while not self.stop.is_set():
-                if self.command_socket.poll(0):
+                if not pending_result and self.command_socket.poll(0):
                     try:
                         command = msgpack.unpackb(self.command_socket.recv(), raw=False)
-                        result = self.command(command)
+                        with self.lock:
+                            result = self.command(command)
                     except (ValueError, TypeError, msgpack.UnpackException):
                         result = {"success": False, "message": "Malformed command"}
-                    self.command_socket.send(msgpack.packb(result, use_bin_type=True))
+                    if result is None:
+                        pending_result = True
+                    else:
+                        self.command_socket.send(msgpack.packb(result, use_bin_type=True))
                 with self.lock:
                     for _ in range(round(1 / STATE_HZ / self.world.model.opt.timestep)):
-                        self.world.step()
+                        self.step()
                     joints, transforms = robot_state(self.world)
                     packet = {
                         "time_ns": round(self.world.data.time * 1e9),
                         "joints": joints,
                         "transforms": transforms,
-                        "flow": self.flow,
-                        "status": "PickPlaceFlow stub: command-only, no motion",
+                        "flow": self.flow_state,
+                        "status": "Simulation running",
                     }
+                if pending_result and self.flow.result is not None:
+                    self.command_socket.send(msgpack.packb({
+                        "success": self.flow.result, "message": "Commands completed",
+                    }, use_bin_type=True))
+                    pending_result = False
                 self.publish(b"state", packet)
                 if tick % STATE_HZ == 0:
                     self.publish(b"status", packet)
@@ -174,8 +199,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--camera-config", type=Path, default=CAMERA_CONFIG)
     args = parser.parse_args()
-    server = SimServer(args.run_dir, args.seed)
+    server = SimServer(args.run_dir, args.seed, args.camera_config)
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: server.stop.set())
     server.run()

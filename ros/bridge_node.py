@@ -111,6 +111,10 @@ class Bridge(Node):
         self.static_tf = StaticTransformBroadcaster(self)
         self.static_tf.sendTransform(static_transforms)
         self.goal_lock = threading.Lock()
+        self.feedback_lock = threading.Lock()
+        self.active_goal = None
+        self.last_flow = None
+        self.flow_started = False
         self.action = ActionServer(
             self, PickPlace, ACTION, execute_callback=self.execute_pick,
             goal_callback=self.accept_goal, callback_group=ReentrantCallbackGroup(),
@@ -126,9 +130,14 @@ class Bridge(Node):
 
     def execute_pick(self, goal):
         goal.publish_feedback(PickPlace.Feedback(state="FORWARDING"))
+        with self.feedback_lock:
+            self.active_goal = goal
+            self.last_flow = None
+            self.flow_started = False
         socket = self.ipc_context.socket(zmq.REQ)
         socket.setsockopt(zmq.SNDTIMEO, 2000)
-        socket.setsockopt(zmq.RCVTIMEO, 2000)
+        socket.setsockopt(zmq.RCVTIMEO, 30000)
+        socket.setsockopt(zmq.IMMEDIATE, 1)
         socket.setsockopt(zmq.LINGER, 0)
         try:
             socket.connect(self.command_endpoint)
@@ -145,6 +154,8 @@ class Bridge(Node):
             result = PickPlace.Result(success=False, message="Sim command timed out or unavailable")
         finally:
             socket.close()
+            with self.feedback_lock:
+                self.active_goal = None
             self.goal_lock.release()
         if result.success:
             goal.publish_feedback(PickPlace.Feedback(state="DONE"))
@@ -163,6 +174,13 @@ class Bridge(Node):
             packet = msgpack.unpackb(payload, raw=False)
             timestamp = stamp(packet["time_ns"])
             if kind == b"state":
+                with self.feedback_lock:
+                    if self.active_goal is not None:
+                        if packet["flow"] not in ("IDLE", "DONE"):
+                            self.flow_started = True
+                        if self.flow_started and packet["flow"] != self.last_flow:
+                            self.active_goal.publish_feedback(PickPlace.Feedback(state=packet["flow"]))
+                            self.last_flow = packet["flow"]
                 self.clock_publisher.publish(ClockMessage(clock=timestamp))
                 joints = packet["joints"]
                 self.joint_publisher.publish(JointState(
@@ -180,7 +198,7 @@ class Bridge(Node):
                 self.diagnostics_publisher.publish(DiagnosticArray(
                     header=Header(stamp=timestamp),
                     status=[DiagnosticStatus(
-                        level=DiagnosticStatus.WARN, name="sim_bridge",
+                        level=DiagnosticStatus.OK, name="sim_bridge",
                         message=packet["status"], hardware_id="mujoco",
                     )],
                 ))

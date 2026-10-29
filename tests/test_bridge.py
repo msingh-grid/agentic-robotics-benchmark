@@ -16,12 +16,14 @@ import zmq
 
 from sandbox.server import robot_state, SimServer
 from sandbox.sim.world import CAMERAS, World
+from sandbox.sim.pick_place import FlowState
 from test_env_smoke import ros_domain, stop_process_group
+from test_pick_place import inside_crate
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_public_robot_state_and_command_only_stub(tmp_path):
+def test_public_robot_state_and_command_only_flow(tmp_path):
     server = SimServer(tmp_path, seed=42)
     try:
         joints, transforms = robot_state(server.world)
@@ -32,14 +34,50 @@ def test_public_robot_state_and_command_only_stub(tmp_path):
             name in {item["child"] for item in transforms}
             for name in [*CAMERAS, "table", "wire0", "crate0"]
         )
-        before = server.world.data.qpos.copy()
-        assert server.command({"op": "pick_place", "object_id": "wire0", "crate_id": "crate0"})["success"]
-        np.testing.assert_array_equal(server.world.data.qpos, before)
-        assert server.flow == "DONE"
         for command in (None, {}, {"op": "ground_truth"}, {
             "op": "pick_place", "object_id": "missing", "crate_id": "crate0",
         }):
             assert not server.command(command)["success"]
+        assert server.command({
+            "op": "pick_place", "object_id": "wire0", "crate_id": "crate0",
+        }) is None
+        before = server.world.data.time
+        server.step()
+        assert server.world.data.time == pytest.approx(before + 0.002)
+        server.world.set_body_pose("wire0", [0.7, 0.45, 0.8], [1, 0, 0, 0])
+        while server.flow.result is None:
+            server.step()
+        assert server.flow.result is True
+        assert server.flow_state == "DONE"
+        assert not inside_crate(server.world, "wire0", "crate0")
+    finally:
+        server.state_socket.close(linger=0)
+        server.command_socket.close(linger=0)
+        server.context.term()
+
+
+def test_completed_flow_holds_arm_between_picks(tmp_path):
+    server = SimServer(tmp_path, seed=0)
+    try:
+        for wire, crate in (("wire0", "crate0"), ("wire1", "crate1")):
+            assert server.command({
+                "op": "pick_place", "object_id": wire, "crate_id": crate,
+            }) is None
+            while server.flow.result is None:
+                server.step()
+            assert inside_crate(server.world, wire, crate)
+            arm = server.flow.ik.qpos
+            dofs = server.flow.ik.dofs
+            for _ in range(500):
+                server.step()
+            resting = server.world.data.qpos[arm].copy()
+            before = server.world.data.time
+            for _ in range(5000):
+                bias = server.world.data.qfrc_bias[dofs].copy()
+                server.step()
+                np.testing.assert_array_equal(server.world.data.qfrc_applied[dofs], bias)
+                np.testing.assert_allclose(server.world.data.qpos[arm], resting, atol=0.0001, rtol=0)
+            assert server.world.data.time == pytest.approx(before + 10)
     finally:
         server.state_socket.close(linger=0)
         server.command_socket.close(linger=0)
@@ -81,7 +119,7 @@ def test_sim_ros_bridge(tmp_path, ros_domain):
     ]
     expected = tmp_path / "expected.json"
     expected.write_text(json.dumps({
-        "joints": joint_names, "links": links,
+        "joints": joint_names, "links": links, "flow_states": [state.value for state in FlowState],
     }))
     env = os.environ.copy()
     env.update(ROS_DOMAIN_ID=ros_domain, ROS_AUTOMATIC_DISCOVERY_RANGE="LOCALHOST")
@@ -94,6 +132,7 @@ def test_sim_ros_bridge(tmp_path, ros_domain):
         commands = {
             "server": [
                 sys.executable, "-m", "sandbox.server", "--run-dir", run_dir, "--seed", "42",
+                "--camera-config", str(config_path),
             ],
             "bridge": [
                 pixi, "run", "--locked", "--manifest-path", str(ROOT / "ros" / "pixi.toml"),
