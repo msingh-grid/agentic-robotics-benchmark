@@ -75,7 +75,7 @@ def test_parallel_cameras_share_fresh_snapshot_and_preserve_pixels(camera_server
     for frame in repeated:
         rgb = np.frombuffer(frame["rgb"], dtype=np.uint8).reshape(480, 640, 3)
         depth = np.frombuffer(frame["depth"], dtype="<f4").reshape(480, 640)
-        assert_stable_rgb(rgb, baseline[frame["name"]][0])
+        assert np.mean(rgb == baseline[frame["name"]][0]) > 0.999
         np.testing.assert_array_equal(depth, baseline[frame["name"]][1])
     with server.lock:
         server.world.set_body_pose("wire0", [0, -0.15, 1.0], [1, 0, 0, 0])

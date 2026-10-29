@@ -120,17 +120,10 @@ def check(args):
     ))
     try:
         wait(node, lambda: all(topic in latest for topic in [*types, "/tf_static"]), timeout=60)
+        args.rate_ready.touch()
         time_start = time.monotonic()
         samples.clear()
-        rolling_rates = []
-        for _ in range(4):
-            window_start = time.monotonic()
-            before = len(samples["/joint_states"])
-            wait(node, lambda: time.monotonic() - window_start >= 5, timeout=10)
-            rate = (len(samples["/joint_states"]) - before) / (time.monotonic() - window_start)
-            rolling_rates.append(rate)
-            print(f"Joint-state five-second window: {rate:.3f} Hz", flush=True)
-            assert rate >= 45, ("Joint-state window below 45 Hz with cameras enabled", rate)
+        wait(node, lambda: time.monotonic() - time_start >= 20, timeout=25)
         sample_duration = time.monotonic() - time_start
         measured = {}
         print("Message counts: " + json.dumps({topic: len(samples[topic]) for topic in types}), flush=True)
@@ -166,6 +159,9 @@ def check(args):
             )
             frame = f"{camera}_optical"
             assert len(image_stamps[frame] & cloud_stamps[frame]) >= 3
+        wait(node, args.joint_rates.exists, timeout=30)
+        rolling_rates = json.loads(args.joint_rates.read_text())
+        assert len(rolling_rates) == 4 and min(rolling_rates) >= 45, rolling_rates
         assert node.get_parameter("use_sim_time").value is True
         topics = dict(node.get_topic_names_and_types())
         assert not any("ground_truth" in name or "true_pose" in name for name in topics)
@@ -233,6 +229,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected", type=Path, required=True)
     parser.add_argument("--camera-config", type=Path, required=True)
+    parser.add_argument("--joint-rates", type=Path, required=True)
+    parser.add_argument("--rate-ready", type=Path, required=True)
     parser.add_argument("--stop-server", type=Path, required=True)
     parser.add_argument("--server-stopped", type=Path, required=True)
     args = parser.parse_args()

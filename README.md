@@ -134,7 +134,9 @@ real server and bridge, checks all stream rates (35% startup/load tolerance), th
 robot/camera TF tree, optical cloud geometry and stamps, configured camera offsets,
 action results, and sim disconnection. It tears down every process.
 With cameras enabled, joint states must also reach at least 45 Hz in each of four
-five-second windows. CI prints these rolling rates for both native platforms.
+five-second windows. A separate state-only ROS reader measures these rates so camera
+deserialization in the geometry checker cannot delay the measurement itself.
+CI prints these rolling rates for both native platforms.
 The idle check allows one simulated second for actuator settling, then verifies every
 joint sample for three simulated seconds. Timestamp checks allow independent DDS topic
 arrival order while requiring per-topic monotonicity and eventual clock coherence.

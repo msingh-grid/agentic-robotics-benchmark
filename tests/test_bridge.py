@@ -125,6 +125,8 @@ def test_sim_ros_bridge(tmp_path, ros_domain):
     env.update(ROS_DOMAIN_ID=ros_domain, ROS_AUTOMATIC_DISCOVERY_RANGE="LOCALHOST")
     stop_server = tmp_path / "stop-server"
     server_stopped = tmp_path / "server-stopped"
+    joint_rates = tmp_path / "joint-rates.json"
+    rate_ready = tmp_path / "rate-ready"
     processes = {}
     logs = {}
     # macOS Unix socket paths have a short limit; pytest's per-test paths can exceed it.
@@ -138,10 +140,16 @@ def test_sim_ros_bridge(tmp_path, ros_domain):
                 pixi, "run", "--locked", "--manifest-path", str(ROOT / "ros" / "pixi.toml"),
                 "bridge", "--run-dir", run_dir, "--camera-config", str(config_path),
             ],
+            "rates": [
+                pixi, "run", "--locked", "--manifest-path", str(ROOT / "ros" / "pixi.toml"),
+                "bash", str(ROOT / "ros" / "run.sh"), "python", str(ROOT / "ros" / "check_joint_rate.py"),
+                "--output", str(joint_rates), "--ready", str(rate_ready),
+            ],
             "probe": [
                 pixi, "run", "--locked", "--manifest-path", str(ROOT / "ros" / "pixi.toml"),
                 "bash", str(ROOT / "ros" / "run.sh"), "python", str(ROOT / "ros" / "check_bridge.py"),
                 "--expected", str(expected), "--camera-config", str(config_path),
+                "--joint-rates", str(joint_rates), "--rate-ready", str(rate_ready),
                 "--stop-server", str(stop_server), "--server-stopped", str(server_stopped),
             ],
         }
@@ -198,6 +206,7 @@ def test_sim_ros_bridge(tmp_path, ros_domain):
                     assert processes[role].poll() is None, f"{role} exited early"
                 time.sleep(0.05)
             assert processes["probe"].poll() == 0, "ROS bridge probe failed or timed out"
+            assert processes["rates"].poll() == 0, "Joint-state rate reader failed"
             assert "BRIDGE_CHECK_OK" in logs["probe"].read_text()
             print(logs["probe"].read_text())
         except Exception as error:
