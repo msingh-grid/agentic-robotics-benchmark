@@ -4,6 +4,7 @@ import argparse
 import math
 import os
 from pathlib import Path
+import queue
 import signal
 import threading
 
@@ -11,7 +12,7 @@ import msgpack
 import numpy as np
 import rclpy
 from rclpy.action import ActionServer, GoalResponse
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -122,6 +123,12 @@ class Bridge(Node):
         self.timer = self.create_timer(
             0.005, self.receive, clock=Clock(clock_type=ClockType.STEADY_TIME),
         )
+        self.camera_frames = queue.Queue(maxsize=len(cameras))
+        self.camera_group = MutuallyExclusiveCallbackGroup()
+        self.camera_timer = self.create_timer(
+            0.02, self.publish_next_camera,
+            callback_group=self.camera_group, clock=Clock(clock_type=ClockType.STEADY_TIME),
+        )
 
     def accept_goal(self, request):
         if not request.object_id or not request.crate_id or not self.goal_lock.acquire(blocking=False):
@@ -203,32 +210,46 @@ class Bridge(Node):
                     )],
                 ))
             elif kind == b"camera":
-                self.publish_camera(packet, timestamp)
+                try:
+                    self.camera_frames.put_nowait(packet)
+                except queue.Full:
+                    pass
+
+    def publish_next_camera(self):
+        try:
+            packet = self.camera_frames.get_nowait()
+        except queue.Empty:
+            return
+        self.publish_camera(packet, stamp(packet["time_ns"]))
 
     def publish_camera(self, packet, timestamp):
         name = packet["name"]
         header = Header(stamp=timestamp, frame_id=f"{name}_optical")
         height, width = packet["height"], packet["width"]
-        self.images[name].publish(Image(
+        image = Image(
             header=header, height=height, width=width, encoding="rgb8",
-            is_bigendian=0, step=width * 3, data=packet["rgb"],
-        ))
+            is_bigendian=0, step=width * 3,
+        )
+        image.data.frombytes(packet["rgb"])
+        self.images[name].publish(image)
         depth = np.frombuffer(packet["depth"], dtype="<f4").reshape(height, width)
-        rows, columns = np.indices((height, width), dtype=np.float32)
-        points = np.stack((
-            (columns - (width - 1) / 2) * depth / packet["focal"],
-            (rows - (height - 1) / 2) * depth / packet["focal"],
-            depth,
-        ), axis=-1).astype("<f4", copy=False)
+        columns = (np.arange(width, dtype=np.float32) - (width - 1) / 2) / packet["focal"]
+        rows = (np.arange(height, dtype=np.float32) - (height - 1) / 2) / packet["focal"]
+        points = np.empty((height, width, 3), dtype="<f4")
+        np.multiply(depth, columns[None, :], out=points[..., 0])
+        np.multiply(depth, rows[:, None], out=points[..., 1])
+        points[..., 2] = depth
         fields = [
             PointField(name=axis, offset=index * 4, datatype=PointField.FLOAT32, count=1)
             for index, axis in enumerate(("x", "y", "z"))
         ]
-        self.clouds[name].publish(PointCloud2(
+        cloud = PointCloud2(
             header=header, height=height, width=width, fields=fields,
             is_bigendian=False, point_step=12, row_step=width * 12,
-            data=points.tobytes(), is_dense=bool(np.isfinite(points).all()),
-        ))
+            is_dense=bool(np.isfinite(points).all()),
+        )
+        cloud.data.frombytes(memoryview(points).cast("B"))
+        self.clouds[name].publish(cloud)
 
     def destroy_node(self):
         self.action.destroy()
@@ -253,7 +274,7 @@ def main():
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.set())
     node = Bridge(args.run_dir.resolve(), args.camera_config)
-    executor = MultiThreadedExecutor(num_threads=2)
+    executor = MultiThreadedExecutor(num_threads=3)
     executor.add_node(node)
     try:
         while not stop.is_set():

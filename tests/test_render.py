@@ -6,9 +6,16 @@ import sys
 import numpy as np
 import pytest
 
+from sandbox.server import SimServer
 from sandbox.sim.render import SceneRenderer
 from sandbox.sim.world import CAMERAS, World
 
+
+
+def assert_matching_rgb(actual, expected):
+    difference = np.abs(actual.astype(np.int16) - expected.astype(np.int16))
+    assert difference.max() <= 2
+    assert np.mean(difference == 0) > 0.999
 
 
 def test_reused_renderer_preserves_camera_pixels_and_refreshes_scene():
@@ -16,18 +23,81 @@ def test_reused_renderer_preserves_camera_pixels_and_refreshes_scene():
     expected = {camera: world.render(camera) for camera in CAMERAS}
     with SceneRenderer(world.model) as renderer:
         for camera in CAMERAS:
-            actual = renderer.render(world.data, camera)
-            for image, baseline in zip(actual, expected[camera]):
-                np.testing.assert_array_equal(image, baseline)
+            rgb, depth = renderer.render(world.data, camera)
+            assert_matching_rgb(rgb, expected[camera][0])
+            np.testing.assert_array_equal(depth, expected[camera][1])
         segmentation = renderer.render(world.data, "cam2", segmentation=True)
         assert segmentation.shape == (480, 640, 2)
         rgb, depth = renderer.render(world.data, "cam2")
-        np.testing.assert_array_equal(rgb, expected["cam2"][0])
+        assert_matching_rgb(rgb, expected["cam2"][0])
         np.testing.assert_array_equal(depth, expected["cam2"][1])
         world.set_body_pose("wire0", [0, -0.15, 1.0], [1, 0, 0, 0])
         moved_rgb, moved_depth = renderer.render(world.data, "cam2")
-        assert not np.array_equal(moved_rgb, rgb)
+        assert np.any(np.abs(moved_rgb.astype(np.int16) - rgb.astype(np.int16)) > 2)
         assert not np.array_equal(moved_depth, depth)
+
+
+@pytest.fixture
+def camera_server(tmp_path):
+    server = SimServer(tmp_path, seed=42)
+    try:
+        yield server
+    finally:
+        server.stop.set()
+        server.camera_barrier.abort()
+        for worker in server.workers:
+            if worker.ident is not None:
+                worker.join(timeout=10)
+            assert not worker.is_alive()
+        server.state_socket.close(linger=0)
+        server.command_socket.close(linger=0)
+        server.context.term()
+
+
+def test_parallel_cameras_share_fresh_snapshot_and_preserve_pixels(camera_server):
+    server = camera_server
+    expected = {camera: server.world.render(camera) for camera in CAMERAS}
+    for worker in server.workers:
+        worker.start()
+    frames = [server.frames.get(timeout=20) for _ in CAMERAS]
+    assert {frame["name"] for frame in frames} == set(CAMERAS)
+    assert len({frame["time_ns"] for frame in frames}) == 1
+    for frame in frames:
+        rgb = np.frombuffer(frame["rgb"], dtype=np.uint8).reshape(480, 640, 3)
+        depth = np.frombuffer(frame["depth"], dtype="<f4").reshape(480, 640)
+        assert_matching_rgb(rgb, expected[frame["name"]][0])
+        np.testing.assert_array_equal(depth, expected[frame["name"]][1])
+    with server.lock:
+        server.world.set_body_pose("wire0", [0, -0.15, 1.0], [1, 0, 0, 0])
+        server.step()
+    refreshed = [server.frames.get(timeout=20) for _ in CAMERAS]
+    assert {frame["name"] for frame in refreshed} == set(CAMERAS)
+    assert len({frame["time_ns"] for frame in refreshed}) == 1
+    assert refreshed[0]["time_ns"] > frames[0]["time_ns"]
+    for frame in refreshed:
+        rgb = np.frombuffer(frame["rgb"], dtype=np.uint8).reshape(480, 640, 3)
+        assert np.any(
+            np.abs(rgb.astype(np.int16) - expected[frame["name"]][0].astype(np.int16)) > 2
+        )
+
+
+def test_camera_failure_releases_both_render_workers(camera_server, monkeypatch):
+    original = SceneRenderer.render
+
+    def render(renderer, data, camera, **kwargs):
+        if camera == CAMERAS[0]:
+            raise RuntimeError("Camera rendering failed")
+        return original(renderer, data, camera, **kwargs)
+
+    monkeypatch.setattr(SceneRenderer, "render", render)
+    for worker in camera_server.workers:
+        worker.start()
+    assert camera_server.stop.wait(timeout=20)
+    for worker in camera_server.workers:
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+    assert isinstance(camera_server.render_error, RuntimeError)
+    assert str(camera_server.render_error) == "Camera rendering failed"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux headless backends")

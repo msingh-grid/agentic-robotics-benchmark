@@ -76,7 +76,13 @@ class SimServer:
             self.world, perception=Perception(self.world, config_path=camera_config),
             on_state=self.on_state,
         )
-        self.worker = threading.Thread(target=self.render_cameras, daemon=True)
+        self.camera_data = mujoco.MjData(self.world.model)
+        self.camera_barrier = threading.Barrier(2)
+        self.workers = [
+            threading.Thread(
+                target=self.render_cameras, args=(CAMERAS[index::2], index == 0), daemon=True,
+            ) for index in range(2)
+        ]
 
     def on_state(self, state):
         self.flow_state = state.value
@@ -100,16 +106,18 @@ class SimServer:
         else:
             self.flow.step()
 
-    def render_cameras(self):
-        data = mujoco.MjData(self.world.model)
+    def render_cameras(self, cameras, capture):
+        data = self.camera_data
         try:
             with SceneRenderer(self.world.model) as renderer:
                 while not self.stop.is_set():
+                    if capture:
+                        with self.lock:
+                            mujoco.mj_copyData(data, self.world.model, self.world.data)
+                    self.camera_barrier.wait()
                     deadline = time.monotonic() + 1 / CAMERA_HZ
-                    with self.lock:
-                        mujoco.mj_copyData(data, self.world.model, self.world.data)
                     stamp = round(data.time * 1e9)
-                    for camera in CAMERAS:
+                    for camera in cameras:
                         rgb, depth = renderer.render(data, camera)
                         height, width = depth.shape
                         focal = height / (2 * math.tan(math.radians(
@@ -128,10 +136,16 @@ class SimServer:
                             self.frames.put_nowait(frame)
                         except queue.Full:
                             pass
+                    # Neither worker may replace the snapshot while its peer still renders it.
+                    self.camera_barrier.wait()
                     self.stop.wait(max(0, deadline - time.monotonic()))
+        except threading.BrokenBarrierError:
+            pass
         except Exception as error:
             self.render_error = error
             self.stop.set()
+        finally:
+            self.camera_barrier.abort()
 
     def publish(self, kind, packet):
         self.state_socket.send_multipart([
@@ -141,7 +155,8 @@ class SimServer:
     def run(self):
         self.state_socket.bind(f"ipc://{self.run_dir / 'state.sock'}")
         self.command_socket.bind(f"ipc://{self.run_dir / 'commands.sock'}")
-        self.worker.start()
+        for worker in self.workers:
+            worker.start()
         tick = 0
         pending_result = False
         deadline = time.monotonic()
@@ -189,7 +204,9 @@ class SimServer:
                 raise RuntimeError("Camera rendering failed") from self.render_error
         finally:
             self.stop.set()
-            self.worker.join(timeout=10)
+            self.camera_barrier.abort()
+            for worker in self.workers:
+                worker.join(timeout=10)
             self.state_socket.close(linger=0)
             self.command_socket.close(linger=0)
             self.context.term()

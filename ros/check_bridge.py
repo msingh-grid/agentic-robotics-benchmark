@@ -24,6 +24,7 @@ from tf2_ros import Buffer, TransformListener
 import yaml
 
 from benchmark_interfaces.action import PickPlace
+from check_timestamps import TopicStamps
 
 
 def nanoseconds(stamp):
@@ -53,20 +54,24 @@ def check(args):
     samples = defaultdict(list)
     latest = {}
     edges = {}
-    last_clock = 0
+    stamps = TopicStamps()
     image_stamps = defaultdict(set)
     cloud_stamps = defaultdict(set)
     checking_static_scene = True
+    idle_reference = None
 
     def record(topic, message):
-        nonlocal last_clock
         samples[topic].append(time.monotonic())
         latest[topic] = message
         if topic == "/clock":
-            current = nanoseconds(message.clock)
-            assert current > last_clock, "Clock did not advance monotonically"
-            last_clock = current
-        elif topic in ("/tf", "/tf_static"):
+            stamps.record(topic, nanoseconds(message.clock))
+        elif topic not in ("/tf", "/tf_static", "/flow/state"):
+            stamps.record(topic, nanoseconds(message.header.stamp))
+        if topic == "/joint_states" and idle_reference is not None:
+            np.testing.assert_allclose(message.position[:6], idle_reference, atol=0.001, rtol=0)
+        if topic in ("/tf", "/tf_static"):
+            if topic == "/tf":
+                stamps.record(topic, nanoseconds(message.transforms[0].header.stamp))
             for item in message.transforms:
                 edges[item.child_frame_id] = item.header.frame_id
         elif topic.endswith("image_raw"):
@@ -75,7 +80,6 @@ def check(args):
             )
             assert len(message.data) == 480 * 640 * 3
             assert np.ptp(np.frombuffer(message.data, dtype=np.uint8)) > 100
-            assert 0 <= nanoseconds(message.header.stamp) <= last_clock
             image_stamps[message.header.frame_id].add(nanoseconds(message.header.stamp))
         elif topic.endswith("points"):
             assert (message.height, message.width, message.point_step, message.row_step) == (
@@ -118,7 +122,15 @@ def check(args):
         wait(node, lambda: all(topic in latest for topic in [*types, "/tf_static"]), timeout=60)
         time_start = time.monotonic()
         samples.clear()
-        wait(node, lambda: time.monotonic() - time_start >= 10, timeout=15)
+        rolling_rates = []
+        for _ in range(4):
+            window_start = time.monotonic()
+            before = len(samples["/joint_states"])
+            wait(node, lambda: time.monotonic() - window_start >= 5, timeout=10)
+            rate = (len(samples["/joint_states"]) - before) / (time.monotonic() - window_start)
+            rolling_rates.append(rate)
+            print(f"Joint-state five-second window: {rate:.3f} Hz", flush=True)
+            assert rate >= 45, ("Joint-state window below 45 Hz with cameras enabled", rate)
         sample_duration = time.monotonic() - time_start
         measured = {}
         print("Message counts: " + json.dumps({topic: len(samples[topic]) for topic in types}), flush=True)
@@ -127,6 +139,7 @@ def check(args):
             assert len(arrivals) >= 3, f"{topic}: too few messages: {len(arrivals)}"
             measured[topic] = len(arrivals) / sample_duration
             assert 0.65 * target <= measured[topic] <= 1.35 * target, (topic, measured[topic])
+        wait(node, stamps.coherent, timeout=2)
         assert set(latest["/joint_states"].name) == set(expected["joints"])
         assert all(name.startswith("robot_") for name in latest["/joint_states"].name)
         assert latest["/diagnostics"].status[0].message == "Simulation running"
@@ -182,10 +195,13 @@ def check(args):
         wait(node, lambda: latest["/flow/state"].data == "DONE")
         assert "FORWARDING" in feedback and "DONE" in feedback
         assert set(expected["flow_states"]) - {"IDLE"} <= set(feedback)
-        resting = list(latest["/joint_states"].position[:6])
-        idle_start = time.monotonic()
-        wait(node, lambda: time.monotonic() - idle_start >= 3)
-        np.testing.assert_allclose(latest["/joint_states"].position[:6], resting, atol=0.001, rtol=0)
+        settled_after = nanoseconds(latest["/clock"].clock) + 1_000_000_000
+        wait(node, lambda: nanoseconds(latest["/joint_states"].header.stamp) >= settled_after)
+        idle_reference = list(latest["/joint_states"].position[:6])
+        idle_end = nanoseconds(latest["/joint_states"].header.stamp) + 3_000_000_000
+        wait(node, lambda: nanoseconds(latest["/joint_states"].header.stamp) >= idle_end)
+        idle_reference = None
+        wait(node, stamps.coherent, timeout=2)
         invalid = result(node, action.send_goal_async(
             PickPlace.Goal(object_id="missing", crate_id="crate0"),
         ))
@@ -207,6 +223,7 @@ def check(args):
         assert response.status == GoalStatus.STATUS_ABORTED and not response.result.success
         assert "unavailable" in response.result.message
         action.destroy()
+        print("JOINT_STATE_ROLLING_HZ " + json.dumps(rolling_rates), flush=True)
         print("BRIDGE_CHECK_OK " + json.dumps(measured, sort_keys=True), flush=True)
     finally:
         node.destroy_node()

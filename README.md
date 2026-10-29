@@ -86,8 +86,9 @@ Full 640×480 rendering runs independently of physics, with a bounded four-frame
 overload drops frames rather than blocking commands. Camera stamps identify the copied
 simulation state, not the later render completion time. These conservative camera rates
 keep the existing full-resolution software-rendered scene usable headlessly.
-The camera worker retains one native GL context and uploaded model across views and samples,
-instead of rebuilding them for each frame on software-rendered Macs.
+Two camera workers each retain a thread-bound native GL context and uploaded model.
+They render camera pairs from one shared snapshot, with matching simulation timestamps.
+This parallelizes software rendering without changing resolution, scene detail, or rates.
 
 `config/cameras.yaml` is shared by S3 perception and S4 camera TF:
 `cameras.<name>.position` is world XYZ in metres and `quaternion` is unit **wxyz**.
@@ -103,6 +104,9 @@ Public packets contain only sim time, named robot joints/link transforms, render
 and depth with intrinsics, command flow state, and bridge status. No object poses,
 camera extrinsics, contacts, segmentation labels, or placement results cross this channel.
 Point clouds contain organized optical-frame XYZ in metres, derived only from depth.
+Camera publication has its own callback group and bounded four-frame bridge queue.
+Three executor threads keep state, cameras, and an active action independently runnable.
+Sensor buffers are filled directly; cloud projection uses broadcast axes without full grids.
 
 In another terminal with the same ROS environment variables, inspect rates and send a goal:
 
@@ -129,6 +133,11 @@ On a Mac, run `bash scripts/setup.sh && uv run pytest` or the focused
 real server and bridge, checks all stream rates (35% startup/load tolerance), the complete
 robot/camera TF tree, optical cloud geometry and stamps, configured camera offsets,
 action results, and sim disconnection. It tears down every process.
+With cameras enabled, joint states must also reach at least 45 Hz in each of four
+five-second windows. CI prints these rolling rates for both native platforms.
+The idle check allows one simulated second for actuator settling, then verifies every
+joint sample for three simulated seconds. Timestamp checks allow independent DDS topic
+arrival order while requiring per-topic monotonicity and eventual clock coherence.
 Use the terminal commands above to check rates manually; RViz is optional.
 If RViz works, select fixed frame `world`, then add TF, Image and PointCloud2 displays.
 A RobotModel display also needs a URDF/robot_description, which S4 does not add.
