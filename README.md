@@ -11,13 +11,15 @@ Brief: [`docs/Agentic Robotics Benchmark - Team Brief.pdf`](docs/Agentic%20Robot
 
 ## Status
 
-Phase 0: repo and factory setup. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy via pixi) with the same interfaces.
+Phase 0: repo and factory setup. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
 
 ## Getting started
 
+Python is managed with [uv](https://docs.astral.sh/uv/). ROS 2 isn't on PyPI, so it lives in a separate [pixi](https://pixi.sh) environment under `ros/` (added in Phase 1).
+
 ```bash
-bash scripts/setup.sh   # installs pixi and the environment
-pixi run test
+bash scripts/setup.sh   # installs uv (and pixi once ros/ exists), then the environments
+uv run pytest
 ```
 
 Works natively on Apple Silicon Macs and on Linux x86_64.

@@ -2,30 +2,33 @@
 
 Phased plan for the POC. One step = one factory task = one PR. Each step lists what it depends on and when it counts as done.
 
+Package management: uv for all Python (`pyproject.toml`), pixi only for ROS 2 (`ros/pixi.toml`).
+
 Open choices (current defaults, may change): robot = UR5e + Robotiq 2F-85 from MuJoCo Menagerie; motion = scripted moves first, MoveIt added for Task 4; benchmarked agent = our own Claude Agent SDK agent + MCP tool server (Warp Factories builds the benchmark, it is not the agent under test).
 
 ## P0 · Repo and Warp Factories setup  (Phase 0)
 
 **Done by you, by hand.** Create the GitHub repo, write the rules file and skills every factory agent reads, connect the factory, and make the Linux runner able to install the project.
 
-- Repo layout as in the code map; `AGENTS.md` with the golden rules: ground truth never reaches the agent; everything must pass `pixi run test-headless`; no Mac-only code paths without a Linux fallback.
+- Repo layout as in the code map; `AGENTS.md` with the golden rules: ground truth never reaches the agent; everything must pass `uv run pytest` (CI on Linux and macOS); no Mac-only code paths without a Linux fallback.
 - Skills (factory-wide): `ros2-pixi` (how to add ROS packages, source env, run nodes headless), `sandbox-contract` (the five interfaces, never bypass them), `grading-rules` (seeded faults, healthy controls, evidence).
-- Factory definition: repo, default models, skills. Runner setup command: install pixi, then `pixi install -e default` (idempotent, runs on every workspace prep). Confirm exact file names against Warp's 'Definitions as code' docs; the schema isn't public in what I could read.
-- Automation: on PR opened against main → review agent runs `pixi run test-headless` and posts a verdict.
+- Factory definition: repo, default models, skills. Runner setup command: `bash scripts/setup.sh` (installs uv, and pixi for ROS) (idempotent, runs on every workspace prep). Confirm exact file names against Warp's 'Definitions as code' docs; the schema isn't public in what I could read.
+- Automation: on PR opened against main → review agent runs `uv run pytest` (CI on Linux and macOS) and posts a verdict.
 - Work source: one GitHub issue per step below, using the step's 'done when' as acceptance criteria.
 
 **Done when:** A trivial issue ('add a hello-world test') goes through the factory and comes back as a passing PR you merge.
 
-## S1 · Pixi environment on Mac and Linux  (Phase 1)
+## S1 · Python (uv) and ROS (pixi) environments on Mac and Linux  (Phase 1)
 
 **Needs:** P0  
-One install command gives ROS 2 Jazzy, MuJoCo, OpenCV and test tools on both your Mac and the factory's Linux runners.
+One setup command gives the Python environment (uv: MuJoCo, OpenCV, test tools) and a separate ROS 2 Jazzy environment (pixi, ROS only), on both your Mac and the factory's Linux runners.
 
-- `pixi.toml`: channels `robostack-jazzy` + `conda-forge`; platforms `osx-arm64`, `linux-64`; deps `ros-jazzy-ros-base`, `ros-jazzy-rosbag2-storage-mcap`, `ros-jazzy-tf2-ros-py`, `mujoco`, `opencv`, `psutil`, `pytest`.
-- Separate `viz` feature with `ros-jazzy-rviz2` (Mac only, optional) so a broken RViz never blocks the build.
-- Linux headless: `MUJOCO_GL=egl` (or `osmesa` fallback) set in the `test-headless` task.
+- Root `pyproject.toml` + `uv.lock` (Python 3.12): `mujoco`, `numpy`, `opencv-python-headless`, `psutil`, `pyyaml`; dev group `pytest`.
+- `ros/pixi.toml`: channels `robostack-jazzy` + `conda-forge`; platforms `osx-arm64`, `linux-64`; `ros-jazzy-ros-base`, `ros-jazzy-rosbag2-storage-mcap`, `ros-jazzy-tf2-ros-py`. Optional `viz` feature with `ros-jazzy-rviz2`.
+- uv-side code never imports rclpy; it reaches ROS through the bridge (local IPC) or `ros2` CLI subprocesses in the pixi env.
+- Linux headless rendering: `MUJOCO_GL=egl` (or `osmesa`) in CI and test fixtures. CI installs both envs (setup-uv + setup-pixi).
 
-**Done when:** `pixi run smoke` starts a ROS talker/listener and renders one MuJoCo frame to PNG, on your Mac and in a factory run.
+**Done when:** A smoke test starts a ROS talker/listener in the pixi env and renders one MuJoCo frame to PNG from the uv env, on your Mac and in CI on Linux and macOS.
 
 ## S2 · Build the pick-and-place cell in MuJoCo  (Phase 1)
 
@@ -54,6 +57,7 @@ The robot picks a named wire and drops it into a crate using simple scripted mov
 **Needs:** S3  
 Exposes the sim the way the real stack does: robot joints, coordinate frames, camera images, point clouds, and a pick-and-place action.
 
+- Runs in the ROS (pixi) env as `ros/bridge_node.py`; gets sim state and images from the uv-side sim over a local socket, so neither env imports the other.
 - Publishes `/joint_states`, `/tf` + `/tf_static`, `/cameras/<n>/color/image_raw`, `/cameras/<n>/depth/points`, `/flow/state`, `/diagnostics`.
 - Action server `/pick_place` (goal: object id, target crate) returning success per command results only.
 - Camera extrinsics in TF come from `config/cameras.yaml` (the 'configured' pose), never from the sim's truth.
