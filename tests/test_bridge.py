@@ -256,3 +256,39 @@ def test_bridge_shutdown_with_pending_action(tmp_path, ros_domain):
         finally:
             for process in reversed(processes):
                 stop_process_group(process)
+
+
+def test_bridge_recovers_after_malformed_command_reply(tmp_path, ros_domain):
+    pixi = shutil.which("pixi") or str(Path.home() / ".pixi/bin/pixi")
+    ros = [pixi, "run", "--locked", "--manifest-path", str(ROOT / "ros/pixi.toml")]
+    env = {
+        **os.environ, "ROS_DOMAIN_ID": ros_domain,
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+    }
+    processes = []
+    with tempfile.TemporaryDirectory(prefix="recovery-", dir="/tmp") as public, \
+            zmq.Context() as context, context.socket(zmq.REP) as command_socket:
+        command_socket.bind(f"ipc://{public}/commands.sock")
+        try:
+            for role, command in (
+                ("bridge", [*ros, "bridge", "--run-dir", public]),
+                ("probe", [*ros, "bash", str(ROOT / "ros/run.sh"), "python",
+                           str(ROOT / "ros/check_action_recovery.py")]),
+            ):
+                with (tmp_path / f"{role}.log").open("w") as output:
+                    processes.append(subprocess.Popen(
+                        command, cwd=ROOT, env=env, stdout=output,
+                        stderr=subprocess.STDOUT, start_new_session=True,
+                    ))
+            for wire, reply in (
+                ("wire0", b"\xc1"),
+                ("wire1", msgpack.packb({"success": True, "message": "Commands completed"})),
+            ):
+                assert command_socket.poll(40000), (tmp_path / "bridge.log").read_text()
+                assert msgpack.unpackb(command_socket.recv(), raw=False)["object_id"] == wire
+                command_socket.send(reply)
+            assert processes[1].wait(timeout=10) == 0, (tmp_path / "probe.log").read_text()
+            assert processes[0].poll() is None, (tmp_path / "bridge.log").read_text()
+        finally:
+            for process in reversed(processes):
+                stop_process_group(process)

@@ -162,7 +162,7 @@ class Bridge(Node):
             self.command_deadline = time.monotonic() + 2
             self.command_future = Future(executor=self.executor)
             self.command_socket = socket
-            response = await self.command_future
+            response = msgpack.unpackb(await self.command_future, raw=False)
             result = PickPlace.Result(
                 success=response["success"], message=response["message"],
             )
@@ -199,7 +199,7 @@ class Bridge(Node):
         except zmq.ZMQError as error:
             self.command_future.set_exception(error)
         else:
-            self.command_future.set_result(msgpack.unpackb(response, raw=False))
+            self.command_future.set_result(response)
 
     def receive(self):
         self.poll_command()
