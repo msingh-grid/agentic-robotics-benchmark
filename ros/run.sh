@@ -14,4 +14,8 @@ case "$(uname -s)" in
   Linux) export LD_LIBRARY_PATH="$ROOT/ros/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
   Darwin) export DYLD_LIBRARY_PATH="$ROOT/ros/install/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" ;;
 esac
+# Replayed camera samples need the same multi-megabyte transport as live publishers.
+if [ -z "${FASTRTPS_DEFAULT_PROFILES_FILE:-}" ] && [ -z "${FASTDDS_DEFAULT_PROFILES_FILE:-}" ]; then
+  export FASTRTPS_DEFAULT_PROFILES_FILE="$ROOT/ros/fastdds.xml"
+fi
 exec "$@"

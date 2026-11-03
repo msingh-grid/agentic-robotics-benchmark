@@ -91,6 +91,8 @@ pixi run --locked --manifest-path ros/pixi.toml ros-cli bag play "$PWD/out/drop/
 
 The recorded `/clock`, images, clouds, joints, TF and flow replay as public topics.
 The private sidecar is neither opened nor published by `bag play`.
+The ROS command wrapper applies the camera-sized Fast DDS transport profile to
+playback as well as the live bridge; either user-supplied DDS profile takes precedence.
 Replay does not re-execute robot commands or reproduce live action services.
 If RViz works on your Mac, use fixed frame `world` and Image/TF/PointCloud2 displays;
 it is optional. For a headless observation, run `ros-cli topic echo /flow/state`

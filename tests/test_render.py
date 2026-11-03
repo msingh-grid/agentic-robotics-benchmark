@@ -14,8 +14,9 @@ from sandbox.sim.world import CAMERAS, World
 
 def assert_stable_rgb(actual, expected):
     difference = np.abs(actual.astype(np.int16) - expected.astype(np.int16))
-    assert difference.max() <= 2
-    assert np.mean(difference == 0) > 0.999
+    unchanged = float(np.mean(difference == 0))
+    assert unchanged > 0.999, f"unchanged_channels={unchanged}"
+    assert difference.max() <= 2, f"max_delta={difference.max()}, unchanged_channels={unchanged}"
 
 
 def test_reused_renderer_preserves_camera_pixels_and_refreshes_scene():
@@ -24,13 +25,13 @@ def test_reused_renderer_preserves_camera_pixels_and_refreshes_scene():
         expected = {camera: renderer.render(world.data, camera) for camera in CAMERAS}
         for camera in CAMERAS:
             rgb, depth = renderer.render(world.data, camera)
-            assert_stable_rgb(rgb, expected[camera][0])
             np.testing.assert_array_equal(depth, expected[camera][1])
+            assert_stable_rgb(rgb, expected[camera][0])
         segmentation = renderer.render(world.data, "cam2", segmentation=True)
         assert segmentation.shape == (480, 640, 2)
         rgb, depth = renderer.render(world.data, "cam2")
-        assert_stable_rgb(rgb, expected["cam2"][0])
         np.testing.assert_array_equal(depth, expected["cam2"][1])
+        assert_stable_rgb(rgb, expected["cam2"][0])
         world.set_body_pose("wire0", [0, -0.15, 1.0], [1, 0, 0, 0])
         moved_rgb, moved_depth = renderer.render(world.data, "cam2")
         assert np.any(np.abs(moved_rgb.astype(np.int16) - rgb.astype(np.int16)) > 2)

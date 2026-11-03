@@ -10,22 +10,42 @@ import sys
 import tempfile
 import time
 
+import psutil
+
 from ros.public_contract import ACTION_TOPICS, TOPICS
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _group_running(group):
+    for member in psutil.process_iter(["pid", "status"]):
+        try:
+            if member.info["status"] not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                if os.getpgid(member.pid) == group:
+                    return True
+        except (ProcessLookupError, PermissionError, psutil.NoSuchProcess):
+            pass
+    return False
+
+
 def stop_process(process, signum=signal.SIGTERM, timeout=5):
-    try:
-        os.killpg(process.pid, signum)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=5)
-        raise RuntimeError("Sandbox child did not stop cleanly")
+    # Children start new sessions; their PIDs remain group IDs after the leaders exit.
+    group = process.pid
+    for pending_signal, allowance in ((signum, timeout), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(group, pending_signal)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + allowance
+        while True:
+            process.poll()
+            if not _group_running(group):
+                process.wait(timeout=5)
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+    raise RuntimeError("Sandbox process group did not stop")
 
 
 class Lifecycle:
@@ -204,15 +224,18 @@ class Lifecycle:
 
     def stop(self):
         errors = []
-        for process, _ in reversed(self.children):
+        remaining = []
+        for process, log in reversed(self.children):
             try:
                 stop_process(process)
-            except RuntimeError as error:
+            except (OSError, RuntimeError) as error:
+                remaining.append((process, log))
                 errors.append(str(error))
-        self.children.clear()
-        self.stack.clear()
+        self.children = list(reversed(remaining))
+        self.stack = [process for process in self.stack
+                      if any(process is child for child, _ in self.children)]
         self.ready = False
-        if self.lease is not None:
+        if not self.children and self.lease is not None:
             self.lease.close()
             self.lease = None
         if errors:

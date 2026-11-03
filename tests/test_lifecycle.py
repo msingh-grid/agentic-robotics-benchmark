@@ -5,6 +5,8 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
+import threading
 import time
 
 import psutil
@@ -208,7 +210,7 @@ def test_recorder_crash_fails_and_stops_the_episode(tmp_path):
             for child in children:
                 try:
                     command = child.cmdline()
-                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
                     continue
                 if all(word in command for word in ("bag", "record", "--storage")):
                     recorders.append(child)
@@ -223,3 +225,86 @@ def test_recorder_crash_fails_and_stops_the_episode(tmp_path):
         assert all(not child.is_running() for child in children)
     finally:
         stop_process_group(process)
+
+
+def test_domain_stays_leased_until_wrapper_descendant_stops(tmp_path, monkeypatch):
+    monkeypatch.delenv("ROS_DOMAIN_ID", raising=False)
+    lifecycle = create_lifecycle()
+    replacement = create_lifecycle()
+    descendant = None
+    wrapper = None
+    stopping = None
+    errors = []
+    pid_file = tmp_path / "descendant.pid"
+    child_code = (
+        "import os, signal, time; from pathlib import Path; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(60)"
+    )
+    wrapper_code = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); time.sleep(60)"
+    )
+
+    def stop():
+        try:
+            lifecycle.stop()
+        except Exception as error:
+            errors.append(error)
+
+    try:
+        lifecycle.start(0)
+        domain = lifecycle.ros_domain
+        wrapper = lifecycle._spawn(
+            [sys.executable, "-c", wrapper_code], tmp_path / "wrapper.log",
+        )
+        deadline = time.monotonic() + 5
+        while not pid_file.exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        descendant = psutil.Process(int(pid_file.read_text()))
+        stopping = threading.Thread(target=stop)
+        stopping.start()
+        assert wrapper.wait(timeout=3) == -signal.SIGTERM
+        assert descendant.is_running() and descendant.status() != psutil.STATUS_ZOMBIE
+        monkeypatch.setenv("ROS_DOMAIN_ID", domain)
+        with pytest.raises(RuntimeError, match="No free local ROS domain"):
+            replacement.start(0)
+        stopping.join(timeout=12)
+        assert not stopping.is_alive()
+        assert not errors
+        assert not descendant.is_running() or descendant.status() == psutil.STATUS_ZOMBIE
+        assert lifecycle.lease is None
+        replacement.start(0)
+        assert replacement.ros_domain == domain
+    finally:
+        if wrapper is not None:
+            try:
+                os.killpg(wrapper.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if stopping is not None:
+            stopping.join(timeout=12)
+        lifecycle.stop()
+        replacement.stop()
+
+
+@pytest.mark.parametrize("override", [None, "FASTRTPS_DEFAULT_PROFILES_FILE", "FASTDDS_DEFAULT_PROFILES_FILE"])
+def test_ros_command_uses_camera_transport_without_overriding_user_profile(override):
+    env = os.environ.copy()
+    for name in ("FASTRTPS_DEFAULT_PROFILES_FILE", "FASTDDS_DEFAULT_PROFILES_FILE"):
+        env.pop(name, None)
+    if override:
+        env[override] = "/caller/profile.xml"
+    result = subprocess.run(
+        [PIXI, "run", "--locked", "--manifest-path", str(ROOT / "ros/pixi.toml"),
+         "bash", str(ROOT / "ros/run.sh"), "python", "-c",
+         "import os,json; print(json.dumps({k:v for k,v in os.environ.items() if k in "
+         "('FASTRTPS_DEFAULT_PROFILES_FILE','FASTDDS_DEFAULT_PROFILES_FILE')}))"],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == (
+        {override: "/caller/profile.xml"} if override
+        else {"FASTRTPS_DEFAULT_PROFILES_FILE": str(ROOT / "ros/fastdds.xml")}
+    )
