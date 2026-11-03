@@ -95,6 +95,19 @@ def test_faults_through_live_server_bridge_and_ros_action(fault, tmp_path, ros_d
                     assert audit["min_delay_ns"] >= 240_000_000
                 else:
                     assert audit["dropped"] > audit["delivered"] > 20
+                stop_process_group(processes[1])
+                with zmq.Context() as context:
+                    with context.socket(zmq.REQ) as socket:
+                        socket.setsockopt(zmq.LINGER, 0)
+                        socket.connect(f"ipc://{public}/commands.sock")
+                        socket.send(msgpack.packb({
+                            "op": "pick_place", "object_id": "wire1", "crate_id": "crate1",
+                        }))
+                        assert socket.poll(30000)
+                        assert msgpack.unpackb(socket.recv(), raw=False)["success"] is True
+                later = truth.snapshot()["verification"]
+                assert later["status"] == "invalid", later
+                assert later["faults"] == [{"type": fault["type"], "verified": False}]
             with pytest.raises(ValueError):
                 create_faults(private).configure({"faults": []}, 0)
             print(f"{fault}: {measured}; {snapshot['verification']}")

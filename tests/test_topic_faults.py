@@ -3,6 +3,7 @@ import tempfile
 
 import msgpack
 import zmq
+from zmq.utils.monitor import recv_monitor_message
 
 from ros.topic_faults import TopicFaults
 
@@ -17,8 +18,10 @@ def deliveries(seed, faults, arrival_lag_ns=0):
                 try:
                     scheduler.poll()
                     assert control.poll(1000)
-                    assert msgpack.unpackb(control.recv(), raw=False) == {"op": "poll", "audit": {}}
-                    control.send(msgpack.packb({"seed": seed, "faults": faults}))
+                    assert msgpack.unpackb(control.recv(), raw=False) == {
+                        "op": "poll", "audit": {}, "episode": None,
+                    }
+                    control.send(msgpack.packb({"seed": seed, "faults": faults, "episode": 0}))
                     assert scheduler.socket.poll(1000)
                     scheduler.poll()
                     delivered = []
@@ -60,3 +63,50 @@ def test_zero_and_full_drop_leave_other_topics_unaffected():
     assert len(deliveries(0, [fault])[0]) == 100
     fault["topic"] = "/diagnostics"
     assert len(deliveries(0, [fault])[0]) == 100
+
+
+def test_episode_change_preserves_pending_delivery_but_resets_its_evidence():
+    with tempfile.TemporaryDirectory(prefix="s5-epoch-", dir="/tmp") as directory:
+        with zmq.Context() as context:
+            with context.socket(zmq.REP) as control:
+                control.setsockopt(zmq.LINGER, 0)
+                scheduler = TopicFaults(context, Path(directory))
+                monitor = scheduler.socket.get_monitor_socket(zmq.EVENT_CONNECTED)
+                control.bind(f"ipc://{directory}/bridge.sock")
+                try:
+                    assert monitor.poll(2000)
+                    assert recv_monitor_message(monitor)["endpoint"] == (
+                        f"ipc://{directory}/bridge.sock".encode()
+                    )
+                    plan = {
+                        "seed": 0, "episode": 0,
+                        "faults": [{"type": "topic_delay", "topic": "/joint_states", "ms": 100}],
+                    }
+                    scheduler.poll()
+                    assert control.poll(1000)
+                    control.recv()
+                    control.send(msgpack.packb(plan))
+                    assert scheduler.socket.poll(1000)
+                    scheduler.poll()
+                    received = []
+                    scheduler.submit("/joint_states", received.append, "previous", 0)
+                    previous_audit = scheduler.audit["/joint_states"]
+                    assert previous_audit["received"] == 1
+                    assert control.poll(1000)
+                    assert msgpack.unpackb(control.recv(), raw=False)["episode"] == 0
+                    control.send(msgpack.packb({**plan, "episode": 1}))
+                    assert scheduler.socket.poll(1000)
+                    scheduler.poll()
+                    assert scheduler.audit == {}
+                    scheduler.advance(100_000_000)
+                    assert received == ["previous"]
+                    assert scheduler.audit == {}
+                    assert previous_audit["delivered"] == 1
+                    scheduler.submit("/joint_states", received.append, "current", 100_000_000)
+                    scheduler.advance(200_000_000)
+                    assert received == ["previous", "current"]
+                    assert scheduler.audit["/joint_states"]["received"] == 1
+                    assert scheduler.audit["/joint_states"]["delivered"] == 1
+                finally:
+                    monitor.close(linger=0)
+                    scheduler.close()

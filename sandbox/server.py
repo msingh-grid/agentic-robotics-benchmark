@@ -151,7 +151,8 @@ class SimServer:
                     self.faults_configured = True
                     result = {"configured": True}
                 elif name == "bridge" and request.get("op") == "poll":
-                    self.faults.bridge_audit = request.get("audit", {})
+                    if request.get("episode") == self.faults.episode:
+                        self.faults.bridge_audit = request.get("audit", {})
                     result = self.faults.bridge_plan()
                 else:
                     raise ValueError("Unknown private request")

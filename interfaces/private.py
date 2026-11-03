@@ -5,7 +5,7 @@ from typing import Protocol
 
 class GroundTruth(Protocol):
     def snapshot(self) -> dict:
-        """Read physical measurements, events, and fault validity."""
+        """Read physical measurements, events, and current-command fault validity."""
         ...
 
 

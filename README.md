@@ -219,7 +219,10 @@ Snapshots return true object/camera poses, current force-bearing gripper contact
 and simulation-time grasp, release, drop, and placement-result events.
 Grasps require contact plus physical lift; release/drop requires sustained contact loss.
 Placement checks capsule endpoints against the crate interior, not action results.
-Private `verification.status` is pending until an episode completes, then valid or invalid.
+Private `verification.status` is pending until the current command completes, then valid or invalid.
+Each command starts fresh physical and transport verification. Late bridge receipts from an
+earlier command cannot validate it; queued public messages still deliver without counting
+toward the new command. The event log retains renewed grasps and releases after contact loss.
 A requested fault with no measured effect is invalid, never a healthy control.
 Transport verification uses post-publisher dispatch audits; integration tests also measure
 actual ROS message rates and stamp gaps. No truth, fault settings, or validity appears in

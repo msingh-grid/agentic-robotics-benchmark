@@ -93,7 +93,7 @@ class GroundTruth:
         if self.request is None or self.completed:
             return
         contacting = {item["object"] for item in self.contacts()}
-        for wire in sorted(contacting - self.grasped):
+        for wire in sorted(contacting - self.held):
             if self.world.body_pose(wire)[0][2] > self.initial_heights[wire] + 0.025:
                 self.event("grasp", object=wire)
                 self.grasped.add(wire)

@@ -89,6 +89,7 @@ class Faults:
         self.fired = {}
         self.verified = set()
         self.bridge_audit = {}
+        self.episode = 0
         self.state = None
         self.state_time = 0
         self.drop_open = False
@@ -112,6 +113,9 @@ class Faults:
 
     def begin(self, wire, crate):
         self.request = (wire, crate)
+        self.episode += 1
+        self.verified.clear()
+        self.bridge_audit = {}
         self.drop_open = False
         self.fired = {}
         self.state = None
@@ -142,6 +146,7 @@ class Faults:
     def bridge_plan(self):
         return {
             "seed": self.seed,
+            "episode": self.episode,
             "faults": [f for f in self.definitions if f["type"].startswith("topic_")],
         }
 

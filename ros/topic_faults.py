@@ -33,7 +33,10 @@ class TopicFaults:
                     rule.update(fault)
                 self.audit = {}
         if not self.waiting:
-            self.socket.send(msgpack.packb({"op": "poll", "audit": self.audit}, use_bin_type=True))
+            self.socket.send(msgpack.packb({
+                "op": "poll", "audit": self.audit,
+                "episode": self.plan["episode"] if self.plan else None,
+            }, use_bin_type=True))
             self.waiting = True
 
     def submit(self, topic, publish, message, source_ns):
@@ -55,17 +58,16 @@ class TopicFaults:
         self.sequence += 1
         self.pending_bytes += size
         heapq.heappush(
-            self.pending, (due, self.sequence, topic, publish, message, self.now_ns, size),
+            self.pending, (due, self.sequence, publish, message, self.now_ns, size, audit),
         )
         self.advance(self.now_ns)
 
     def advance(self, now_ns):
         self.now_ns = max(self.now_ns, now_ns)
         while self.pending and self.pending[0][0] <= self.now_ns:
-            _, _, topic, publish, message, queued_ns, size = heapq.heappop(self.pending)
+            _, _, publish, message, queued_ns, size, audit = heapq.heappop(self.pending)
             self.pending_bytes -= size
             publish(message)
-            audit = self.audit[topic]
             audit["delivered"] += 1
             delay = self.now_ns - queued_ns
             audit["min_delay_ns"] = min(audit.get("min_delay_ns", delay), delay)

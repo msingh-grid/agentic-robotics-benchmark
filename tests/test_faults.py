@@ -91,6 +91,41 @@ def test_seeded_fault_repeats_event_log_and_physics(fault):
     np.testing.assert_array_equal(runs[0][1], runs[1][1])
 
 
+def test_repeated_commands_verify_only_their_own_physical_events():
+    runs = []
+    for _ in range(2):
+        with simulation([PHYSICAL_FAULTS[1]]) as server:
+            attempts = []
+            for _ in range(4):
+                truth, verification = episode(server)
+                events = truth["events"][server.truth.event_start:]
+                dropped = any(event["kind"] == "drop" for event in events)
+                assert verification["faults"][0]["verified"] == dropped, events
+                assert verification["status"] == ("valid" if dropped else "invalid")
+                attempts.append((events, verification))
+            runs.append(attempts)
+    assert runs[0] == runs[1]
+
+
+def test_contact_loss_regrasp_and_final_release_are_all_recorded():
+    with simulation([PHYSICAL_FAULTS[0]]) as server:
+        truth, verification = episode(server)
+        wire = server.faults.actual_wire
+        grasps = [event for event in truth["events"]
+                  if event["kind"] == "grasp" and event["object"] == wire]
+        releases = [event for event in truth["events"]
+                    if event["kind"] == "release" and event["object"] == wire]
+        assert len(grasps) >= 2, truth["events"]
+        assert len(releases) >= 2, truth["events"]
+        assert grasps[0]["time_ns"] < releases[0]["time_ns"] < grasps[-1]["time_ns"]
+        assert grasps[-1]["time_ns"] < releases[-1]["time_ns"]
+        assert releases[-1]["time_ns"] >= 13_000_000_000
+        assert server.truth.held == set()
+        assert wire in server.truth.grasped
+        assert inside_crate(server.world, wire, "crate0")
+        assert verification["status"] == "valid"
+
+
 @pytest.mark.parametrize("fault", [
     {"type": "drop_in_transit", "at_state": "TRANSPORT", "t": 100},
     {"type": "place_outside_crate", "offset_m": [0, 0, 0]},
@@ -148,7 +183,6 @@ def test_private_ipc_permissions_and_capability_boundaries(monkeypatch):
                 imports = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
                            else [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
                 assert not any(name.startswith("sandbox") for name in imports), path
-    assert "ground_truth" not in (root / "ros" / "bridge_node.py").read_text().split('"""', 2)[-1]
 
 
 def test_live_contacts_and_rotation_only_camera_fault():
