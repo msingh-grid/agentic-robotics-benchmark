@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import queue
 import signal
+import tempfile
 import threading
 import time
 
@@ -17,6 +18,8 @@ from sandbox.sim.render import SceneRenderer
 from sandbox.sim.perception import CAMERA_CONFIG, Perception
 from sandbox.sim.pick_place import FlowState, PickPlaceFlow
 from sandbox.sim.world import CAMERAS, World
+from sandbox.sim.faults import Faults, load_scenario
+from sandbox.sim.ground_truth import GroundTruth, bind_private
 
 STATE_HZ = 50
 CAMERA_HZ = 0.5
@@ -59,10 +62,14 @@ def robot_state(world):
 
 
 class SimServer:
-    def __init__(self, run_dir, seed, camera_config=CAMERA_CONFIG):
+    def __init__(self, run_dir, seed, camera_config=CAMERA_CONFIG, *, private_dir=None, scenario=None):
         self.world = World(seed=seed)
+        self.seed = seed
         self.run_dir = Path(run_dir).resolve()
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.private_dir = Path(private_dir or tempfile.mkdtemp(prefix="truth-", dir="/tmp")).resolve()
+        if self.private_dir == self.run_dir or self.run_dir in self.private_dir.parents:
+            raise ValueError("Private storage must be outside the public run directory")
         self.context = zmq.Context()
         self.state_socket = self.context.socket(zmq.PUB)
         self.state_socket.setsockopt(zmq.SNDHWM, 16)
@@ -72,8 +79,14 @@ class SimServer:
         self.lock = threading.Lock()
         self.frames = queue.Queue(maxsize=len(CAMERAS))
         self.render_error = None
+        self.truth = GroundTruth(self.world)
+        self.faults_configured = scenario is not None
+        self.faults = Faults(
+            self.world, Perception(self.world, config_path=camera_config),
+            scenario if scenario is not None else {"faults": []}, seed,
+        )
         self.flow = PickPlaceFlow(
-            self.world, perception=Perception(self.world, config_path=camera_config),
+            self.world, perception=self.faults,
             on_state=self.on_state,
         )
         self.camera_data = mujoco.MjData(self.world.model)
@@ -91,9 +104,16 @@ class SimServer:
         if not isinstance(command, dict) or command.get("op") != "pick_place":
             return {"success": False, "message": "Unknown command"}
         try:
-            self.flow.start(command.get("object_id"), command.get("crate_id"))
-        except (ValueError, RuntimeError, TypeError) as error:
-            return {"success": False, "message": str(error)}
+            wire, crate = command.get("object_id"), command.get("crate_id")
+            if self.flow.state not in (FlowState.IDLE, FlowState.DONE):
+                raise RuntimeError("busy")
+            if wire not in {f"wire{i}" for i in range(7)} or crate not in {"crate0", "crate1"}:
+                raise ValueError("unknown object or crate")
+            self.faults.begin(wire, crate)
+            self.flow.start(wire, crate)
+            self.truth.begin(wire, crate)
+        except (ValueError, RuntimeError, TypeError):
+            return {"success": False, "message": "Invalid or unavailable pick-and-place command"}
         return None
 
     def step(self):
@@ -104,7 +124,40 @@ class SimServer:
                 self.world.data.qfrc_applied[dofs] = self.world.data.qfrc_bias[dofs]
             self.world.step()
         else:
+            self.faults.before_step(self.flow)
             self.flow.step()
+        self.truth.observe(self.flow)
+
+    def private_requests(self, sockets):
+        for name, socket in sockets.items():
+            if not socket.poll(0):
+                continue
+            try:
+                request = msgpack.unpackb(socket.recv(), raw=False)
+                if name == "ground_truth" and request == {"op": "snapshot"}:
+                    result = {
+                        **self.truth.snapshot(),
+                        "verification": self.faults.verification(self.truth),
+                    }
+                elif name == "faults" and request.get("op") == "configure":
+                    if self.flow.state != FlowState.IDLE or self.faults_configured:
+                        raise ValueError("Faults must be configured once before the first action")
+                    if request["seed"] != self.seed:
+                        raise ValueError("Fault seed must match the world seed")
+                    self.faults = Faults(
+                        self.world, self.faults.perception, request["scenario"], self.seed,
+                    )
+                    self.flow.perception = self.faults
+                    self.faults_configured = True
+                    result = {"configured": True}
+                elif name == "bridge" and request.get("op") == "poll":
+                    self.faults.bridge_audit = request.get("audit", {})
+                    result = self.faults.bridge_plan()
+                else:
+                    raise ValueError("Unknown private request")
+            except (ValueError, TypeError, KeyError, AttributeError, msgpack.UnpackException):
+                result = {"error": "Invalid private request"}
+            socket.send(msgpack.packb(result, use_bin_type=True))
 
     def render_cameras(self, cameras, capture):
         data = self.camera_data
@@ -155,6 +208,12 @@ class SimServer:
     def run(self):
         self.state_socket.bind(f"ipc://{self.run_dir / 'state.sock'}")
         self.command_socket.bind(f"ipc://{self.run_dir / 'commands.sock'}")
+        private_sockets = {}
+        for name in ("ground_truth", "faults", "bridge"):
+            socket = self.context.socket(zmq.REP)
+            socket.setsockopt(zmq.MAXMSGSIZE, 65536)
+            bind_private(socket, self.private_dir, f"{name}.sock")
+            private_sockets[name] = socket
         for worker in self.workers:
             worker.start()
         tick = 0
@@ -162,6 +221,8 @@ class SimServer:
         deadline = time.monotonic()
         try:
             while not self.stop.is_set():
+                with self.lock:
+                    self.private_requests(private_sockets)
                 if not pending_result and self.command_socket.poll(0):
                     try:
                         command = msgpack.unpackb(self.command_socket.recv(), raw=False)
@@ -209,6 +270,8 @@ class SimServer:
                 worker.join(timeout=10)
             self.state_socket.close(linger=0)
             self.command_socket.close(linger=0)
+            for socket in private_sockets.values():
+                socket.close(linger=0)
             self.context.term()
 
 
@@ -217,8 +280,13 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--camera-config", type=Path, default=CAMERA_CONFIG)
+    parser.add_argument("--private-dir", type=Path)
+    parser.add_argument("--scenario", type=Path)
     args = parser.parse_args()
-    server = SimServer(args.run_dir, args.seed, args.camera_config)
+    server = SimServer(
+        args.run_dir, args.seed, args.camera_config, private_dir=args.private_dir,
+        scenario=load_scenario(args.scenario) if args.scenario else None,
+    )
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: server.stop.set())
     server.run()

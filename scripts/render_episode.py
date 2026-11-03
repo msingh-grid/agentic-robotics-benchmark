@@ -3,14 +3,16 @@
 import argparse
 from pathlib import Path
 import sys
+import tempfile
 
 import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sandbox.sim.pick_place import FlowState, PickPlaceFlow
-from sandbox.sim.world import World
+from sandbox.server import SimServer
+from sandbox.sim.faults import load_scenario
+from sandbox.sim.pick_place import FlowState
 
 
 # TODO(pawel): confirm camera names.
@@ -40,17 +42,36 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--wire", default="wire0")
     parser.add_argument("--crate", default="crate0")
+    parser.add_argument("--scenario", type=Path)
+    parser.add_argument("--output-prefix", default="episode")
     args = parser.parse_args()
-    world = World(seed=args.seed)
-    flow = PickPlaceFlow(world)
+    with tempfile.TemporaryDirectory(prefix="episode-", dir="/tmp") as directory:
+        server = SimServer(
+            directory, args.seed,
+            scenario=load_scenario(args.scenario) if args.scenario else None,
+        )
+        try:
+            render_episode(server, args)
+        finally:
+            server.state_socket.close(linger=0)
+            server.command_socket.close(linger=0)
+            server.context.term()
+
+
+def render_episode(server, args):
+    world, flow = server.world, server.flow
     images = [frame(world, flow.state, args.wire, args.crate)]
     snapshots = {FlowState.IDLE: images[0]}
-    flow.start(args.wire, args.crate)
+    result = server.command({
+        "op": "pick_place", "object_id": args.wire, "crate_id": args.crate,
+    })
+    if result is not None:
+        raise ValueError(result["message"])
     sample_steps = round(0.25 / world.model.opt.timestep)
     tick = 0
     while flow.result is None:
         state = flow.state
-        flow.step()
+        server.step()
         tick += 1
         if tick % sample_steps == 0 or flow.state == FlowState.DONE:
             image = frame(world, state, args.wire, args.crate)
@@ -64,16 +85,18 @@ def main():
     sheet = np.vstack([np.hstack(tiles[i:i + 2]) for i in range(0, 8, 2)])
     output = Path(__file__).resolve().parents[1] / "out"
     output.mkdir(exist_ok=True)
-    if not cv2.imwrite(str(output / "episode.png"), sheet):
+    prefix = Path(args.output_prefix).name
+    if not cv2.imwrite(str(output / f"{prefix}.png"), sheet):
         raise RuntimeError("Could not write episode contact sheet")
     animation = cv2.Animation()
     animation.frames = images
     animation.durations = [125] * len(images)
     animation.durations[-1] = 1500
     animation.loop_count = 0
-    if not cv2.imwriteanimation(str(output / "episode.gif"), animation):
+    if not cv2.imwriteanimation(str(output / f"{prefix}.gif"), animation):
         raise RuntimeError("Could not write episode GIF")
-    print(f"Command success: {flow.result}; wrote {output / 'episode.png'} and episode.gif")
+    print(f"Command success: {flow.result}; verification: {server.faults.verification(server.truth)}")
+    print(f"Wrote {output / f'{prefix}.png'} and {output / f'{prefix}.gif'}")
 
 
 if __name__ == "__main__":
