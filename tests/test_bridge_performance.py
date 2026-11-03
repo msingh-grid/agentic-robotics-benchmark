@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
@@ -50,22 +51,30 @@ def test_camera_enabled_bridge_performance(private, tmp_path, ros_domain):
                         stderr=subprocess.STDOUT, start_new_session=True,
                     )
             deadline = time.monotonic() + 60
-            bridge = None
+            observed = {"server": psutil.Process(processes["server"].pid)}
             while (
-                bridge is None or not camera_ready.exists()
+                len(observed) != 3 or not camera_ready.exists()
                 or logs["topic-hz"].read_text().count("average rate:") < 6
             ):
                 assert time.monotonic() < deadline, "Bridge or topic-hz did not become ready"
                 assert all(process.poll() is None for process in processes.values())
-                for child in psutil.Process(processes["bridge"].pid).children(recursive=True):
-                    try:
-                        arguments = child.cmdline()
-                    except psutil.NoSuchProcess:
-                        continue
-                    if any(Path(arg).name == "bridge_node.py" for arg in arguments):
-                        bridge = child
+                for role, script in (("bridge", "bridge_node.py"), ("topic-hz", "ros2")):
+                    for child in psutil.Process(processes[role].pid).children(recursive=True):
+                        try:
+                            arguments = child.cmdline()
+                        except psutil.NoSuchProcess:
+                            continue
+                        if any(Path(arg).name == script for arg in arguments):
+                            observed[role] = child
                 time.sleep(0.05)
-            bridge.cpu_percent()
+            print("BRIDGE_PERFORMANCE_HOST " + json.dumps({
+                "platform": platform.platform(), "machine": platform.machine(),
+                "logical_cpus": psutil.cpu_count(), "physical_cpus": psutil.cpu_count(logical=False),
+                "pids": {role: process.pid for role, process in observed.items()},
+            }), flush=True)
+            for process in observed.values():
+                process.cpu_percent()
+            psutil.cpu_percent()
             offset = logs["topic-hz"].stat().st_size
             ready.touch()
             if private:
@@ -95,9 +104,12 @@ def test_camera_enabled_bridge_performance(private, tmp_path, ros_domain):
                             if line.startswith("average rate:"):
                                 cli_rates.append(float(line.split(":")[1]))
                     time.sleep(0.02)
+                process_cpu = {role: process.cpu_percent() for role, process in observed.items()}
                 window = {
                     "window": index + 1, "seconds": time.monotonic() - start,
-                    "topic_hz": cli_rates, "bridge_cpu_percent": bridge.cpu_percent(),
+                    "topic_hz": cli_rates, "bridge_cpu_percent": process_cpu["bridge"],
+                    "process_cpu_percent": process_cpu, "host_cpu_percent": psutil.cpu_percent(),
+                    "host_load_average": os.getloadavg(),
                 }
                 windows.append(window)
                 print(f"BRIDGE_PERFORMANCE private={private} " + json.dumps(window), flush=True)

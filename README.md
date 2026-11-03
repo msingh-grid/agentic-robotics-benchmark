@@ -163,6 +163,8 @@ and checks every CLI report in each window. The CLI averages 250 arrival interva
 (about five seconds at 50 Hz), not fixed wall-time bins; the independent counter uses
 fixed five-second wall-time bins so a stalled publisher cannot hide behind that average.
 Both native CI jobs print the windows and upload their JUnit measurement logs.
+The logs identify the machine and CPU count, and report server/CLI process CPU,
+whole-host CPU utilization and load averages alongside bridge CPU in every window.
 Run `uv run pytest tests/test_fault_bridge.py -v -s` to check all seeded fault picks.
 These automated Mac checks are required in addition to Linux results; Linux measurements
 do not establish the Apple Silicon CPU budget.
