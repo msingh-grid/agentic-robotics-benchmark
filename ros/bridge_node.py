@@ -30,6 +30,7 @@ import yaml
 import zmq
 
 from benchmark_interfaces.action import PickPlace
+from topic_faults import TopicFaults
 
 ROOT = Path(__file__).resolve().parents[1]
 # TODO(pawel): confirm public topic, action, world, mount and optical frame names.
@@ -81,12 +82,14 @@ def camera_transforms(config_path):
 
 
 class Bridge(Node):
-    def __init__(self, run_dir, camera_config):
+    def __init__(self, run_dir, camera_config, private_dir=None):
         super().__init__(
             "sim_bridge", parameter_overrides=[Parameter("use_sim_time", value=True)],
         )
         cameras, static_transforms = camera_transforms(camera_config)
         self.ipc_context = zmq.Context()
+        self.impairment = TopicFaults(self.ipc_context, private_dir) if private_dir else None
+        self.impairment_lock = threading.Lock()
         self.state_socket = self.ipc_context.socket(zmq.SUB)
         self.state_socket.setsockopt(zmq.RCVHWM, 16)
         self.state_socket.setsockopt(zmq.SUBSCRIBE, b"")
@@ -172,6 +175,9 @@ class Bridge(Node):
         return result
 
     def receive(self):
+        if self.impairment is not None:
+            with self.impairment_lock:
+                self.impairment.poll()
         # Bound each drain so action and shutdown callbacks remain responsive under load.
         for _ in range(32):
             try:
@@ -181,6 +187,9 @@ class Bridge(Node):
             packet = msgpack.unpackb(payload, raw=False)
             timestamp = stamp(packet["time_ns"])
             if kind == b"state":
+                if self.impairment is not None:
+                    with self.impairment_lock:
+                        self.impairment.advance(packet["time_ns"])
                 with self.feedback_lock:
                     if self.active_goal is not None:
                         if packet["flow"] not in ("IDLE", "DONE"):
@@ -188,27 +197,27 @@ class Bridge(Node):
                         if self.flow_started and packet["flow"] != self.last_flow:
                             self.active_goal.publish_feedback(PickPlace.Feedback(state=packet["flow"]))
                             self.last_flow = packet["flow"]
-                self.clock_publisher.publish(ClockMessage(clock=timestamp))
+                self.publish_topic("/clock", self.clock_publisher.publish, ClockMessage(clock=timestamp), packet)
                 joints = packet["joints"]
-                self.joint_publisher.publish(JointState(
+                self.publish_topic("/joint_states", self.joint_publisher.publish, JointState(
                     header=Header(stamp=timestamp, frame_id=WORLD_FRAME),
                     name=joints["names"], position=joints["position"], velocity=joints["velocity"],
-                ))
-                self.tf.sendTransform([
+                ), packet)
+                self.publish_topic("/tf", self.tf.sendTransform, [
                     transform(
                         item["parent"], item["child"], item["position"],
                         item["quaternion"], timestamp,
                     ) for item in packet["transforms"]
-                ])
+                ], packet)
             elif kind == b"status":
-                self.flow_publisher.publish(String(data=packet["flow"]))
-                self.diagnostics_publisher.publish(DiagnosticArray(
+                self.publish_topic("/flow/state", self.flow_publisher.publish, String(data=packet["flow"]), packet)
+                self.publish_topic("/diagnostics", self.diagnostics_publisher.publish, DiagnosticArray(
                     header=Header(stamp=timestamp),
                     status=[DiagnosticStatus(
                         level=DiagnosticStatus.OK, name="sim_bridge",
                         message=packet["status"], hardware_id="mujoco",
                     )],
-                ))
+                ), packet)
             elif kind == b"camera":
                 try:
                     self.camera_frames.put_nowait(packet)
@@ -222,6 +231,13 @@ class Bridge(Node):
             return
         self.publish_camera(packet, stamp(packet["time_ns"]))
 
+    def publish_topic(self, topic, publish, message, packet):
+        if self.impairment is None:
+            publish(message)
+        else:
+            with self.impairment_lock:
+                self.impairment.submit(topic, publish, message, packet["time_ns"])
+
     def publish_camera(self, packet, timestamp):
         name = packet["name"]
         header = Header(stamp=timestamp, frame_id=f"{name}_optical")
@@ -231,7 +247,9 @@ class Bridge(Node):
             is_bigendian=0, step=width * 3,
         )
         image.data.frombytes(packet["rgb"])
-        self.images[name].publish(image)
+        self.publish_topic(
+            f"/cameras/{name}/color/image_raw", self.images[name].publish, image, packet,
+        )
         depth = np.frombuffer(packet["depth"], dtype="<f4").reshape(height, width)
         columns = (np.arange(width, dtype=np.float32) - (width - 1) / 2) / packet["focal"]
         rows = (np.arange(height, dtype=np.float32) - (height - 1) / 2) / packet["focal"]
@@ -249,11 +267,15 @@ class Bridge(Node):
             is_dense=bool(np.isfinite(points).all()),
         )
         cloud.data.frombytes(memoryview(points).cast("B"))
-        self.clouds[name].publish(cloud)
+        self.publish_topic(
+            f"/cameras/{name}/depth/points", self.clouds[name].publish, cloud, packet,
+        )
 
     def destroy_node(self):
         self.action.destroy()
         self.state_socket.close(linger=0)
+        if self.impairment is not None:
+            self.impairment.close()
         self.ipc_context.term()
         return super().destroy_node()
 
@@ -262,6 +284,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--camera-config", type=Path, default=ROOT / "config" / "cameras.yaml")
+    parser.add_argument("--private-dir", type=Path)
     args, ros_args = parser.parse_known_args()
     # Fast DDS's 512 KiB default segment loses whole multi-megabyte best-effort camera samples.
     if not (
@@ -273,7 +296,7 @@ def main():
     stop = threading.Event()
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.set())
-    node = Bridge(args.run_dir.resolve(), args.camera_config)
+    node = Bridge(args.run_dir.resolve(), args.camera_config, args.private_dir)
     executor = MultiThreadedExecutor(num_threads=3)
     executor.add_node(node)
     try:

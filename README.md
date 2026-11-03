@@ -11,7 +11,7 @@ Brief: [`docs/Agentic Robotics Benchmark - Team Brief.pdf`](docs/Agentic%20Robot
 
 ## Status
 
-Phase 1 · S4: a headless MuJoCo cell with ROS 2 telemetry and real scripted pick/place actions. The UR5e + Robotiq 2F-85, seven rigid wires, two open crates and four RGB/depth cameras use the S3 flow. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
+Phase 1 · S5: a headless MuJoCo cell with ROS 2 telemetry, private physical ground truth and seeded faults. The UR5e + Robotiq 2F-85, seven rigid wires, two open crates and four RGB/depth cameras use the S3 flow. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
 
 ## Getting started
 
@@ -70,7 +70,7 @@ pixi run --locked --manifest-path ros/pixi.toml bridge --run-dir "$RUN_DIR"
 
 The server owns `state.sock` (PUB, msgpack multipart sensor stream) and `commands.sock`
 (REP, msgpack command dictionaries) inside that directory. Do not share a run directory
-between servers. Stop both processes with Ctrl+C. The bridge never opens a private socket.
+between servers. Stop both processes with Ctrl+C. The bridge never opens the ground-truth socket.
 The uv environment does not import ROS packages; the pixi bridge does not import the sim.
 
 Default rates: `/clock`, `/joint_states`, and `/tf` are 50 Hz; `/flow/state` and
@@ -164,7 +164,7 @@ pads, travels to crate0, and is released. Command output is in `out/ros_episode_
 Import `PickPlaceFlow` from `sandbox.sim.pick_place` and `World` from `sandbox.sim.world`.
 The fingers grip through physics contacts; no objects are attached or teleported.
 The result means **commands completed**, not that a grasp or placement succeeded.
-Only tests inspect the physical outcome.
+The private ground-truth service measures the physical outcome independently.
 
 For an event loop, call `flow.start(wire, crate)`, then `flow.step()` until `flow.result is not None`.
 Each `step()` advances physics once (2 ms); do not also call `World.step()` for that tick.
@@ -179,6 +179,69 @@ Run `uv run python scripts/render_episode.py --seed 0 --wire wire0 --crate crate
 On a Mac, regenerate with `bash scripts/setup.sh && uv run python scripts/render_episode.py --seed 0 --wire wire0 --crate crate0 && open out/episode.png out/episode.gif`.
 Check that the red wire lifts between the pads, travels above the crate walls and settles inside crate0 after release.
 `uv run pytest tests/test_ik.py tests/test_perception.py tests/test_pick_place.py` checks downward reach, configured calibration, 20 seeded placements, determinism and command-only results.
+
+## Private ground truth and seeded faults (S5)
+
+Pass `--private-dir "$PRIVATE_DIR"` to the server. Use a separate directory outside
+`RUN_DIR`, created with `PRIVATE_DIR=$(mktemp -d /tmp/robotics-private.XXXXXX)`.
+It must have mode 0700. Private REP sockets have mode 0600 from bind time.
+Without this argument the server creates a private temporary directory, not a public endpoint.
+Do not pass or mount private paths, scenario files, or private clients into the benchmarked
+agent's environment. These permissions protect against other OS users, not processes with
+the same UID; agent isolation must enforce that access boundary.
+
+`interfaces/private.py` defines the two S5 capabilities. Grading obtains only
+`backends.create_ground_truth(PRIVATE_DIR).snapshot()`. The harness obtains only
+`backends.create_faults(PRIVATE_DIR).configure(scenario, seed)`. Neither client imports
+the simulator. `BENCH_BACKEND` selects `mac_mujoco` (default) or the unimplemented
+`isaac_docker` private capabilities. Observe, Act, and Lifecycle integration is separate work.
+
+Configure once before the first action, with the same explicit seed as the server.
+Alternatively, start the server with `--scenario path.yaml --seed N`.
+A scenario is a mapping with a `faults` list; `faults: []` is a healthy control.
+Each entry has a `type` and these parameters:
+
+- `wrong_object`: choose another wire with the seeded generator.
+- `drop_in_transit`: `at_state` is LIFT, TRANSPORT or PLACE; `t` is seconds after state entry.
+- `place_outside_crate`: `offset_m` is a three-element world XYZ destination offset.
+- `camera_offset`: `cam`, `xyz_m`, `rpy_deg`; move the true camera by a world XYZ offset
+  and extrinsic world X/Y/Z rotations. Configured perception extrinsics and ROS TF do not move.
+- `topic_delay`: `topic`, `ms`; delay publication by simulation time, keeping source stamps.
+- `topic_drop`: `topic`, `rate` in [0, 1]; seeded independent decisions for that topic.
+
+For topic faults, pass the same `--private-dir` to the bridge. It exchanges only transport
+settings and dispatch measurements on `bridge.sock`, never ground truth.
+Delay/drop applies to periodic public topics, including individual images and clouds;
+static TF and action results are not impaired. Delay queues are bounded to 4096 messages
+and 64 MiB of sensor data. Overflow invalidates an attempt instead of hiding extra loss.
+
+Snapshots return true object/camera poses, current force-bearing gripper contacts,
+and simulation-time grasp, release, drop, and placement-result events.
+Grasps require contact plus physical lift; release/drop requires sustained contact loss.
+Placement checks capsule endpoints against the crate interior, not action results.
+Private `verification.status` is pending until the current command completes, then valid or invalid.
+Each command starts fresh physical and transport verification. Late bridge receipts from an
+earlier command cannot validate it; queued public messages still deliver without counting
+toward the new command. The event log retains renewed grasps and releases after contact loss.
+A requested fault with no measured effect is invalid, never a healthy control.
+Transport verification uses post-publisher dispatch audits; integration tests also measure
+actual ROS message rates and stamp gaps. No truth, fault settings, or validity appears in
+public IPC packets, diagnostics, TF, or action results. Results still mean commands completed.
+
+Run `uv run pytest tests/test_faults.py tests/test_topic_faults.py tests/test_fault_bridge.py -rP`
+for physical faults, healthy controls, deterministic logs, private permissions, ineffective
+faults and all six faults through the real ROS action.
+On a Mac, regenerate the healthy and transit-drop images and GIFs with:
+
+```bash
+uv run python scripts/render_episode.py --seed 0
+uv run python scripts/render_episode.py --seed 0 --scenario tests/fixtures/drop_in_transit.yaml --output-prefix drop
+open out/episode.png out/drop.png out/episode.gif out/drop.gif
+```
+
+Compare the red wire inside crate0 in the healthy episode with the red wire on the table
+after the transit drop. Both flows finish with command success. S6 adds managed bring-up,
+readiness, recording, and replay; this step does not start those services automatically.
 
 ## Contributing
 
