@@ -1,6 +1,12 @@
 """Private capability placeholders for the future real sandbox."""
 
 
+class Lifecycle:
+    def __init__(self):
+        # TODO: connect the Isaac sandbox's lifecycle and recording controls.
+        raise NotImplementedError("Isaac lifecycle is not available")
+
+
 class GroundTruth:
     def __init__(self, private_dir):
         self.private_dir = private_dir

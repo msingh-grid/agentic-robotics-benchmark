@@ -12,8 +12,17 @@ dependencies = [
     "pyzmq>=27.2.0",
 ]
 
-[tool.uv]
-package = false
+[project.scripts]
+bringup = "harness.cli:bringup"
+record = "harness.cli:record"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["backends", "grading", "harness", "interfaces", "ros", "sandbox", "sandbox.sim"]
+include-package-data = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

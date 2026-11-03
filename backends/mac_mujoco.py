@@ -4,6 +4,7 @@ from pathlib import Path
 
 import msgpack
 import zmq
+from backends.mujoco_runtime import Lifecycle
 
 
 def _request(private_dir, endpoint, request):
