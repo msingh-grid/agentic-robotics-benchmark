@@ -111,34 +111,51 @@ def offscreen_context(width, height):
         yield
 
 
-def render_scene(model, data, camera, *, width=640, height=480, segmentation=False):
-    """Return top-left-origin RGB/depth, or (object id, object type) segmentation."""
-    if isinstance(camera, str):
-        view = mujoco.MjvCamera()
-        view.type = mujoco.mjtCamera.mjCAMERA_FIXED
-        view.fixedcamid = model.camera(camera).id
-    else:
-        view = camera
-    with ExitStack() as resources:
-        resources.enter_context(offscreen_context(width, height))
-        scene = mujoco.MjvScene(model, maxgeom=max(1000, model.ngeom * 2))
-        option = mujoco.MjvOption()
-        option.geomgroup[3] = 0  # Collision proxies obscure the robot's visual meshes.
+class SceneRenderer:
+    """Thread-bound offscreen renderer that retains uploaded model resources."""
+
+    def __init__(self, model, *, width=640, height=480):
+        self.model = model
+        self.width = width
+        self.height = height
+        self.resources = ExitStack()
+
+    def __enter__(self):
+        try:
+            self.resources.enter_context(offscreen_context(self.width, self.height))
+            self.scene = mujoco.MjvScene(self.model, maxgeom=max(1000, self.model.ngeom * 2))
+            self.option = mujoco.MjvOption()
+            self.option.geomgroup[3] = 0  # Collision proxies obscure the robot's visual meshes.
+            self.framebuffer = mujoco.MjrContext(self.model, mujoco.mjtFontScale.mjFONTSCALE_150)
+            self.resources.callback(self.framebuffer.free)
+            mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, self.framebuffer)
+            self.framebuffer.readDepthMap = mujoco.mjtDepthMap.mjDEPTH_ZERONEAR
+            self.viewport = mujoco.MjrRect(0, 0, self.width, self.height)
+            return self
+        except Exception:
+            self.resources.close()
+            raise
+
+    def __exit__(self, *exc_info):
+        return self.resources.__exit__(*exc_info)
+
+    def render(self, data, camera, *, segmentation=False):
+        model, scene, framebuffer = self.model, self.scene, self.framebuffer
+        if isinstance(camera, str):
+            view = mujoco.MjvCamera()
+            view.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            view.fixedcamid = model.camera(camera).id
+        else:
+            view = camera
         mujoco.mjv_updateScene(
-            model, data, option, None, view, mujoco.mjtCatBit.mjCAT_ALL, scene,
+            model, data, self.option, None, view, mujoco.mjtCatBit.mjCAT_ALL, scene,
         )
-        framebuffer = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_150)
-        resources.callback(framebuffer.free)
-        mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, framebuffer)
-        framebuffer.readDepthMap = mujoco.mjtDepthMap.mjDEPTH_ZERONEAR
-        viewport = mujoco.MjrRect(0, 0, width, height)
-        rgb = np.empty((height, width, 3), dtype=np.uint8)
-        depth = np.empty((height, width), dtype=np.float32)
-        if segmentation:
-            scene.flags[mujoco.mjtRndFlag.mjRND_SEGMENT] = 1
-            scene.flags[mujoco.mjtRndFlag.mjRND_IDCOLOR] = 1
-        mujoco.mjr_render(viewport, scene, framebuffer)
-        mujoco.mjr_readPixels(rgb, depth, viewport, framebuffer)
+        rgb = np.empty((self.height, self.width, 3), dtype=np.uint8)
+        depth = np.empty((self.height, self.width), dtype=np.float32)
+        scene.flags[mujoco.mjtRndFlag.mjRND_SEGMENT] = segmentation
+        scene.flags[mujoco.mjtRndFlag.mjRND_IDCOLOR] = segmentation
+        mujoco.mjr_render(self.viewport, scene, framebuffer)
+        mujoco.mjr_readPixels(rgb, depth, self.viewport, framebuffer)
         if segmentation:
             colors = rgb.astype(np.uint32)
             ids = colors[..., 0] + 256 * colors[..., 1] + 65536 * colors[..., 2]
@@ -151,3 +168,9 @@ def render_scene(model, data, camera, *, width=640, height=480, segmentation=Fal
         far = model.vis.map.zfar * model.stat.extent
         depth = (near / (1 - depth.astype(np.float64) * (1 - near / far))).astype(np.float32)
         return np.flipud(rgb).copy(), np.flipud(depth).copy()
+
+
+def render_scene(model, data, camera, *, width=640, height=480, segmentation=False):
+    """Return top-left-origin RGB/depth, or (object id, object type) segmentation."""
+    with SceneRenderer(model, width=width, height=height) as renderer:
+        return renderer.render(data, camera, segmentation=segmentation)

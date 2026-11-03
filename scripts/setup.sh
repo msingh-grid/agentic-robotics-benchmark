@@ -33,6 +33,7 @@ if [ -f "$REPO_ROOT/ros/pixi.toml" ]; then
   pixi install --locked --manifest-path "$REPO_ROOT/ros/pixi.toml"
   # Load ROS once so macOS checks the freshly installed libraries now, not during the first test.
   pixi run --locked --manifest-path "$REPO_ROOT/ros/pixi.toml" python -c "import rclpy"
+  pixi run --locked --manifest-path "$REPO_ROOT/ros/pixi.toml" build-interfaces
 else
   echo "No ros/pixi.toml yet; skipping ROS environment."
 fi

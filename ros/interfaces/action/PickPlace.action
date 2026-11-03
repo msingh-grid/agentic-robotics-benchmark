@@ -1,0 +1,7 @@
+string object_id
+string crate_id
+---
+bool success
+string message
+---
+string state
