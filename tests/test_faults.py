@@ -76,7 +76,7 @@ def test_physical_faults_and_healthy_controls(faults, seed, tmp_path):
             assert inside_crate(server.world, server.faults.actual_wire, "crate0")
         if faults and faults[0]["type"] == "drop_in_transit":
             drop = next(event for event in truth["events"] if event["kind"] == "drop")
-            assert 8_000_000_000 <= drop["time_ns"] < 8_100_000_000
+            assert 9_000_000_000 <= drop["time_ns"] < 9_100_000_000
 
 
 @pytest.mark.parametrize("fault", PHYSICAL_FAULTS[:2])
@@ -119,20 +119,21 @@ def test_invalid_scenarios_are_rejected(scenario):
         validate(scenario)
 
 
-def test_private_ipc_permissions_and_capability_boundaries(tmp_path, monkeypatch):
-    private = tmp_path / "private"
-    with zmq.Context() as context:
+def test_private_ipc_permissions_and_capability_boundaries(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="s5-mode-", dir="/tmp") as directory, \
+            zmq.Context() as context:
+        private = Path(directory) / "private"
         with context.socket(zmq.REP) as socket:
             bind_private(socket, private, "ground_truth.sock")
             assert private.stat().st_mode & 0o777 == 0o700
             assert (private / "ground_truth.sock").stat().st_mode & 0o777 == 0o600
-        public = tmp_path / "public"
+        public = Path(directory) / "public"
         public.mkdir(mode=0o755)
         with context.socket(zmq.REP) as socket:
             with pytest.raises(ValueError, match="0700"):
                 bind_private(socket, public, "truth.sock")
-    with pytest.raises(ValueError, match="outside"):
-        SimServer(public, 0, private_dir=public / "private")
+        with pytest.raises(ValueError, match="outside"):
+            SimServer(public, 0, private_dir=public / "private")
     assert not hasattr(create_faults(private), "snapshot")
     assert not hasattr(create_ground_truth(private), "configure")
     monkeypatch.setenv("BENCH_BACKEND", "isaac_docker")

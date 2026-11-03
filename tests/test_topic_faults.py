@@ -7,7 +7,7 @@ import zmq
 from ros.topic_faults import TopicFaults
 
 
-def deliveries(seed, faults):
+def deliveries(seed, faults, arrival_lag_ns=0):
     with tempfile.TemporaryDirectory(prefix="s5-schedule-", dir="/tmp") as directory:
         with zmq.Context() as context:
             with context.socket(zmq.REP) as control:
@@ -23,13 +23,13 @@ def deliveries(seed, faults):
                     scheduler.poll()
                     delivered = []
                     for tick in range(100):
-                        scheduler.advance(tick * 20_000_000)
+                        scheduler.advance(tick * 20_000_000 + arrival_lag_ns)
                         scheduler.submit(
                             "/joint_states", lambda value: delivered.append(
                                 (scheduler.now_ns, value),
                             ), tick, tick * 20_000_000,
                         )
-                    scheduler.advance(5_000_000_000)
+                    scheduler.advance(5_000_000_000 + arrival_lag_ns)
                     return delivered, scheduler.audit
                 finally:
                     scheduler.close()
@@ -48,6 +48,9 @@ def test_combined_delay_drop_repeats_seed_and_preserves_original_stamps():
     assert all(delivered - source * 20_000_000 >= 100_000_000 for delivered, source in first)
     stats = audit["/joint_states"]
     assert stats["received"] == stats["dropped"] + stats["delivered"] == 100
+    lagged, lagged_audit = deliveries(7, faults, arrival_lag_ns=1_000_000_000)
+    assert [source for _, source in lagged] == [source for _, source in first]
+    assert lagged_audit["/joint_states"]["min_delay_ns"] == 100_000_000
 
 
 def test_zero_and_full_drop_leave_other_topics_unaffected():

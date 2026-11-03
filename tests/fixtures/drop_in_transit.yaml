@@ -1,4 +1,4 @@
 faults:
   - type: drop_in_transit
     at_state: TRANSPORT
-    t: 0.5
+    t: 1.5

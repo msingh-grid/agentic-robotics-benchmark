@@ -17,6 +17,7 @@ class TopicFaults:
         self.rules = {}
         self.audit = {}
         self.pending = []
+        self.pending_bytes = 0
         self.sequence = 0
         self.now_ns = 0
 
@@ -30,7 +31,6 @@ class TopicFaults:
                 for fault in plan["faults"]:
                     rule = self.rules.setdefault(fault["topic"], {})
                     rule.update(fault)
-                    rule["rng"] = random.Random(f"{plan['seed']}:{fault['topic']}")
                 self.audit = {}
         if not self.waiting:
             self.socket.send(msgpack.packb({"op": "poll", "audit": self.audit}, use_bin_type=True))
@@ -43,27 +43,31 @@ class TopicFaults:
             return
         audit = self.audit.setdefault(topic, {"received": 0, "dropped": 0, "delivered": 0})
         audit["received"] += 1
-        if rule["rng"].random() < rule.get("rate", 0):
+        draw = random.Random(f"{self.plan['seed']}:{topic}:{source_ns}").random()
+        if draw < rule.get("rate", 0):
             audit["dropped"] += 1
             return
         due = self.now_ns + round(rule.get("ms", 0) * 1e6)
-        if len(self.pending) >= 4096:
+        size = len(getattr(message, "data", b""))
+        if len(self.pending) >= 4096 or self.pending_bytes + size > 64 * 1024 * 1024:
             audit["overflow"] = audit.get("overflow", 0) + 1
             return
         self.sequence += 1
+        self.pending_bytes += size
         heapq.heappush(
-            self.pending, (due, self.sequence, topic, publish, message, source_ns),
+            self.pending, (due, self.sequence, topic, publish, message, self.now_ns, size),
         )
         self.advance(self.now_ns)
 
     def advance(self, now_ns):
         self.now_ns = max(self.now_ns, now_ns)
         while self.pending and self.pending[0][0] <= self.now_ns:
-            _, _, topic, publish, message, source_ns = heapq.heappop(self.pending)
+            _, _, topic, publish, message, queued_ns, size = heapq.heappop(self.pending)
+            self.pending_bytes -= size
             publish(message)
             audit = self.audit[topic]
             audit["delivered"] += 1
-            delay = self.now_ns - source_ns
+            delay = self.now_ns - queued_ns
             audit["min_delay_ns"] = min(audit.get("min_delay_ns", delay), delay)
             audit["max_delay_ns"] = max(audit.get("max_delay_ns", delay), delay)
 

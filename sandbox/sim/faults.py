@@ -7,6 +7,7 @@ import numpy as np
 import yaml
 
 from sandbox.sim.ground_truth import inside_crate
+from sandbox.sim.perception import rotation_matrix
 from sandbox.sim.pick_place import FlowState
 from sandbox.sim.world import CAMERAS
 
@@ -105,8 +106,9 @@ class Faults:
                 mujoco.mju_euler2Quat(delta, np.radians(fault["rpy_deg"]), "XYZ")
                 rotated = np.empty(4)
                 mujoco.mju_mulQuat(rotated, delta, quaternion)
-                world.set_camera_pose(name, position + vector(fault["xyz_m"], "xyz_m"), rotated)
-                self.camera_expected[name] = (camera.pos.copy(), camera.quat.copy())
+                expected_position = position + vector(fault["xyz_m"], "xyz_m")
+                self.camera_expected[name] = (expected_position.copy(), rotated.copy())
+                world.set_camera_pose(name, expected_position, rotated)
 
     def begin(self, wire, crate):
         self.request = (wire, crate)
@@ -172,8 +174,13 @@ class Faults:
                 verified = bool(
                     (np.linalg.norm(expected_position - position) > 1e-8
                      or abs(float(expected_quaternion @ quaternion)) < 1 - 1e-10)
-                    and np.allclose(camera.pos, expected_position, atol=1e-9, rtol=0)
-                    and abs(float(camera.quat @ expected_quaternion)) > 1 - 1e-10
+                    and np.allclose(
+                        self.world.data.cam_xpos[camera.id], expected_position, atol=1e-9, rtol=0,
+                    )
+                    and np.allclose(
+                        self.world.data.cam_xmat[camera.id].reshape(3, 3),
+                        rotation_matrix(expected_quaternion), atol=1e-9, rtol=0,
+                    )
                 )
             elif kind.startswith("topic_"):
                 audit = self.bridge_audit.get(fault["topic"], {})
@@ -188,7 +195,10 @@ class Faults:
                     )
             if verified:
                 self.verified.add(index)
-            results.append({"type": kind, "verified": index in self.verified})
+            overflow = kind.startswith("topic_") and self.bridge_audit.get(
+                fault["topic"], {},
+            ).get("overflow", 0)
+            results.append({"type": kind, "verified": index in self.verified and not bool(overflow)})
         complete = truth.completed
         return {
             "status": ("valid" if all(r["verified"] for r in results) else "invalid")
