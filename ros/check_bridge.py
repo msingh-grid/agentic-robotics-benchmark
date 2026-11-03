@@ -161,7 +161,7 @@ def check(args):
             assert len(image_stamps[frame] & cloud_stamps[frame]) >= 3
         wait(node, args.joint_rates.exists, timeout=30)
         rolling_rates = json.loads(args.joint_rates.read_text())
-        assert len(rolling_rates) == 4 and min(rolling_rates) >= 45, rolling_rates
+        assert len(rolling_rates) == 4 and min(rolling_rates) >= 48, rolling_rates
         assert node.get_parameter("use_sim_time").value is True
         topics = dict(node.get_topic_names_and_types())
         assert not any("ground_truth" in name or "true_pose" in name for name in topics)

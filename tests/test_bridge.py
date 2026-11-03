@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -143,7 +144,7 @@ def test_sim_ros_bridge(tmp_path, ros_domain):
             "rates": [
                 pixi, "run", "--locked", "--manifest-path", str(ROOT / "ros" / "pixi.toml"),
                 "bash", str(ROOT / "ros" / "run.sh"), "python", str(ROOT / "ros" / "check_joint_rate.py"),
-                "--output", str(joint_rates), "--ready", str(rate_ready),
+                "--output", str(joint_rates), "--ready", str(rate_ready), "--windows", "4",
             ],
             "probe": [
                 pixi, "run", "--locked", "--manifest-path", str(ROOT / "ros" / "pixi.toml"),
@@ -215,4 +216,43 @@ def test_sim_ros_bridge(tmp_path, ros_domain):
             ))
         finally:
             for process in reversed(list(processes.values())):
+                stop_process_group(process)
+
+
+def test_bridge_shutdown_with_pending_action(tmp_path, ros_domain):
+    pixi = shutil.which("pixi") or str(Path.home() / ".pixi/bin/pixi")
+    ros = [pixi, "run", "--locked", "--manifest-path", str(ROOT / "ros/pixi.toml")]
+    env = {
+        **os.environ, "ROS_DOMAIN_ID": ros_domain,
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+    }
+    ready = tmp_path / "accepted"
+    processes = []
+    with tempfile.TemporaryDirectory(prefix="shutdown-", dir="/tmp") as public, \
+            zmq.Context() as context, context.socket(zmq.REP) as command_socket:
+        command_socket.bind(f"ipc://{public}/commands.sock")
+        try:
+            for role, command in (
+                ("bridge", [*ros, "bridge", "--run-dir", public]),
+                ("probe", [*ros, "bash", str(ROOT / "ros/run.sh"), "python",
+                           str(ROOT / "ros/check_pending_action.py"), "--ready", str(ready)]),
+            ):
+                with (tmp_path / f"{role}.log").open("w") as output:
+                    processes.append(subprocess.Popen(
+                        command, cwd=ROOT, env=env, stdout=output,
+                        stderr=subprocess.STDOUT, start_new_session=True,
+                    ))
+            assert command_socket.poll(40000), "Bridge did not forward the action"
+            assert msgpack.unpackb(command_socket.recv(), raw=False)["op"] == "pick_place"
+            deadline = time.monotonic() + 5
+            while not ready.exists():
+                assert time.monotonic() < deadline, (tmp_path / "probe.log").read_text()
+                time.sleep(0.02)
+            os.killpg(processes[0].pid, signal.SIGTERM)
+            assert processes[0].wait(timeout=5) == 0, (tmp_path / "bridge.log").read_text()
+            assert processes[1].poll() is None, (tmp_path / "probe.log").read_text()
+            bridge_log = (tmp_path / "bridge.log").read_text()
+            assert "Traceback" not in bridge_log and "exception" not in bridge_log.lower(), bridge_log
+        finally:
+            for process in reversed(processes):
                 stop_process_group(process)

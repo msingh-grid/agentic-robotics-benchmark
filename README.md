@@ -105,7 +105,9 @@ and depth with intrinsics, command flow state, and bridge status. No object pose
 camera extrinsics, contacts, segmentation labels, or placement results cross this channel.
 Point clouds contain organized optical-frame XYZ in metres, derived only from depth.
 Camera publication has its own callback group and bounded four-frame bridge queue.
-Three executor threads keep state, cameras, and an active action independently runnable.
+One executor dispatches state and camera callbacks without thread-pool wait-set contention.
+The action awaits a future while a steady-time timer polls its command socket without
+blocking. Telemetry continues during picks and while a missing server times out.
 Sensor buffers are filled directly; cloud projection uses broadcast axes without full grids.
 
 In another terminal with the same ROS environment variables, inspect rates and send a goal:
@@ -133,10 +135,10 @@ On a Mac, run `bash scripts/setup.sh && uv run pytest` or the focused
 real server and bridge, checks all stream rates (35% startup/load tolerance), the complete
 robot/camera TF tree, optical cloud geometry and stamps, configured camera offsets,
 action results, and sim disconnection. It tears down every process.
-With cameras enabled, joint states must also reach at least 45 Hz in each of four
-five-second windows. A separate state-only ROS reader measures these rates so camera
-deserialization in the geometry checker cannot delay the measurement itself.
-CI prints these rolling rates for both native platforms.
+With cameras enabled, joint states must also reach at least 48 Hz in each of four
+five-second windows. A separate ROS reader measures these rates and observes raw camera
+arrivals so camera deserialization in the geometry checker cannot delay the measurement itself.
+CI prints these rates for both native platforms.
 The idle check allows one simulated second for actuator settling, then verifies every
 joint sample for three simulated seconds. Timestamp checks allow independent DDS topic
 arrival order while requiring per-topic monotonicity and eventual clock coherence.
@@ -144,6 +146,26 @@ Use the terminal commands above to check rates manually; RViz is optional.
 If RViz works, select fixed frame `world`, then add TF, Image and PointCloud2 displays.
 A RobotModel display also needs a URDF/robot_description, which S4 does not add.
 The cell geometry is unchanged; the ROS action now moves the arm through the existing flow.
+
+### Bridge performance follow-up (S4/S5)
+
+Run `uv run pytest tests/test_bridge_performance.py -v -s` on a Mac after setup.
+On Linux, prefix the command with `MUJOCO_GL=egl`.
+The test starts fresh seed-0 servers with all four RGB and cloud streams enabled.
+It measures the plain bridge and the `--private-dir` bridge for 60 seconds each,
+after camera discovery and CLI warm-up. The private-mode check includes a live pick.
+Each of twelve five-second reporting windows must have joint arrival rates ≥48 Hz
+and bridge process CPU <50% of one core. CPU is not divided by the host core count.
+The independent counter checks strictly increasing physics stamps and receives every
+camera stream in every window; it cannot pass by repeating stale state or disabling cameras.
+The test also runs the real `ros2 topic hz /joint_states --wall-time --window 250`
+and checks every CLI report in each window. The CLI averages 250 arrival intervals
+(about five seconds at 50 Hz), not fixed wall-time bins; the independent counter uses
+fixed five-second wall-time bins so a stalled publisher cannot hide behind that average.
+Both native CI jobs print the windows and upload their JUnit measurement logs.
+Run `uv run pytest tests/test_fault_bridge.py -v -s` to check all seeded fault picks.
+These automated Mac checks are required in addition to Linux results; Linux measurements
+do not establish the Apple Silicon CPU budget.
 
 To regenerate proof from the actual ROS action on a Mac, start a fresh server above with
 `--seed 0` and its bridge. Use the same `RUN_DIR` and ROS variables, then run:
