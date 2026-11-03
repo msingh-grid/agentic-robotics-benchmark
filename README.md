@@ -11,7 +11,7 @@ Brief: [`docs/Agentic Robotics Benchmark - Team Brief.pdf`](docs/Agentic%20Robot
 
 ## Status
 
-Phase 1 · S5: a headless MuJoCo cell with ROS 2 telemetry, private physical ground truth and seeded faults. The UR5e + Robotiq 2F-85, seven rigid wires, two open crates and four RGB/depth cameras use the S3 flow. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
+Phase 1 · S6: a headless MuJoCo cell with managed bring-up, physical readiness checks and per-episode MCAP recording. See [Start, record and replay](docs/sandbox.md) for `uv run bringup` and `uv run record`. The UR5e + Robotiq 2F-85, seven rigid wires, two open crates and four RGB/depth cameras use the S3 flow. Until the real Isaac Sim sandbox is available, we build a Mac-native stand-in (MuJoCo + ROS 2 Jazzy) with the same interfaces.
 
 ## Getting started
 
@@ -194,7 +194,7 @@ the same UID; agent isolation must enforce that access boundary.
 `backends.create_ground_truth(PRIVATE_DIR).snapshot()`. The harness obtains only
 `backends.create_faults(PRIVATE_DIR).configure(scenario, seed)`. Neither client imports
 the simulator. `BENCH_BACKEND` selects `mac_mujoco` (default) or the unimplemented
-`isaac_docker` private capabilities. Observe, Act, and Lifecycle integration is separate work.
+`isaac_docker` private capabilities. S6 adds the harness-only Lifecycle capability.
 
 Configure once before the first action, with the same explicit seed as the server.
 Alternatively, start the server with `--scenario path.yaml --seed N`.
@@ -240,8 +240,8 @@ open out/episode.png out/drop.png out/episode.gif out/drop.gif
 ```
 
 Compare the red wire inside crate0 in the healthy episode with the red wire on the table
-after the transit drop. Both flows finish with command success. S6 adds managed bring-up,
-readiness, recording, and replay; this step does not start those services automatically.
+after the transit drop. Both flows finish with command success.
+Use the [S6 commands](docs/sandbox.md) for managed bring-up, recording and replay.
 
 ## Contributing
 
