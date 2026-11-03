@@ -3,6 +3,11 @@
 import os
 
 from interfaces.private import Faults, GroundTruth
+from interfaces.lifecycle import Lifecycle
+
+
+def create_lifecycle() -> Lifecycle:
+    return _backend().Lifecycle()
 
 
 def create_ground_truth(private_dir) -> GroundTruth:
