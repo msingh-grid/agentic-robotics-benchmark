@@ -33,4 +33,12 @@ jobs:
           echo "MUJOCO_GL=egl" >> "$GITHUB_ENV"
       - run: uv sync --locked
       - run: pixi run --locked --manifest-path ros/pixi.toml build-interfaces
-      - run: uv run pytest -rP
+      - name: Measure camera-enabled bridge for 60 seconds per mode
+        run: uv run pytest tests/test_bridge_performance.py -v -rP --junitxml=out/bridge-performance.xml -o junit_logging=all
+      - name: Upload bridge measurement windows
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-performance-${{ matrix.os }}
+          path: out/bridge-performance.xml
+      - run: uv run pytest -rP --ignore=tests/test_bridge_performance.py

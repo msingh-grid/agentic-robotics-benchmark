@@ -7,6 +7,7 @@ from pathlib import Path
 import queue
 import signal
 import threading
+import time
 
 import msgpack
 import numpy as np
@@ -14,11 +15,12 @@ import rclpy
 from rclpy.action import ActionServer, GoalResponse
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.clock import Clock, ClockType
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
+from rclpy.task import Future
 from builtin_interfaces.msg import Time
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from geometry_msgs.msg import TransformStamped
@@ -119,6 +121,8 @@ class Bridge(Node):
         self.active_goal = None
         self.last_flow = None
         self.flow_started = False
+        self.command_socket = None
+        self.command_future = None
         self.action = ActionServer(
             self, PickPlace, ACTION, execute_callback=self.execute_pick,
             goal_callback=self.accept_goal, callback_group=ReentrantCallbackGroup(),
@@ -138,31 +142,35 @@ class Bridge(Node):
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
-    def execute_pick(self, goal):
+    async def execute_pick(self, goal):
         goal.publish_feedback(PickPlace.Feedback(state="FORWARDING"))
         with self.feedback_lock:
             self.active_goal = goal
             self.last_flow = None
             self.flow_started = False
         socket = self.ipc_context.socket(zmq.REQ)
-        socket.setsockopt(zmq.SNDTIMEO, 2000)
-        socket.setsockopt(zmq.RCVTIMEO, 30000)
         socket.setsockopt(zmq.IMMEDIATE, 1)
         socket.setsockopt(zmq.LINGER, 0)
         try:
             socket.connect(self.command_endpoint)
-            socket.send(msgpack.packb({
+            self.command_payload = msgpack.packb({
                 "op": "pick_place",
                 "object_id": goal.request.object_id,
                 "crate_id": goal.request.crate_id,
-            }, use_bin_type=True))
-            response = msgpack.unpackb(socket.recv(), raw=False)
+            }, use_bin_type=True)
+            self.command_sent = False
+            self.command_deadline = time.monotonic() + 2
+            self.command_future = Future(executor=self.executor)
+            self.command_socket = socket
+            response = msgpack.unpackb(await self.command_future, raw=False)
             result = PickPlace.Result(
                 success=response["success"], message=response["message"],
             )
         except zmq.ZMQError:
             result = PickPlace.Result(success=False, message="Sim command timed out or unavailable")
         finally:
+            self.command_socket = None
+            self.command_future = None
             socket.close()
             with self.feedback_lock:
                 self.active_goal = None
@@ -174,7 +182,27 @@ class Bridge(Node):
             goal.abort()
         return result
 
+    def poll_command(self):
+        if self.command_socket is None or self.command_future.done():
+            return
+        try:
+            if time.monotonic() >= self.command_deadline:
+                raise zmq.Again()
+            if not self.command_sent:
+                self.command_socket.send(self.command_payload, flags=zmq.NOBLOCK)
+                self.command_sent = True
+                self.command_deadline = time.monotonic() + 30
+            response = self.command_socket.recv(flags=zmq.NOBLOCK)
+        except zmq.Again as error:
+            if time.monotonic() >= self.command_deadline:
+                self.command_future.set_exception(error)
+        except zmq.ZMQError as error:
+            self.command_future.set_exception(error)
+        else:
+            self.command_future.set_result(response)
+
     def receive(self):
+        self.poll_command()
         if self.impairment is not None:
             with self.impairment_lock:
                 self.impairment.poll()
@@ -273,6 +301,8 @@ class Bridge(Node):
 
     def destroy_node(self):
         self.action.destroy()
+        if self.command_socket is not None:
+            self.command_socket.close(linger=0)
         self.state_socket.close(linger=0)
         if self.impairment is not None:
             self.impairment.close()
@@ -297,7 +327,7 @@ def main():
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.set())
     node = Bridge(args.run_dir.resolve(), args.camera_config, args.private_dir)
-    executor = MultiThreadedExecutor(num_threads=3)
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:
         while not stop.is_set():

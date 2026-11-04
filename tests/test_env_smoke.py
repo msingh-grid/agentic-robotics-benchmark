@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def stop_process_group(process):
+    if process.poll() is not None:
+        return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -28,6 +30,17 @@ def stop_process_group(process):
         except ProcessLookupError:
             pass
         process.wait(timeout=2)
+
+
+def test_completed_process_is_not_signalled(monkeypatch):
+    process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    assert process.wait(timeout=5) == 0
+
+    def unexpected_signal(*args):
+        pytest.fail("An exited process group must not be signalled")
+
+    monkeypatch.setattr(os, "killpg", unexpected_signal)
+    stop_process_group(process)
 
 
 @pytest.fixture
