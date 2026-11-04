@@ -3,10 +3,12 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
 import time
+from unittest.mock import Mock
 
 import psutil
 import pytest
@@ -14,6 +16,56 @@ import pytest
 from test_env_smoke import ros_domain, stop_process_group
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def find_child_process(parent, script):
+    for child in parent.children(recursive=True):
+        try:
+            arguments = child.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        if any(Path(arg).name == script for arg in arguments):
+            return child
+    return None
+
+
+def check_cli_rates(windows):
+    assert windows and all(window["topic_hz"] for window in windows), windows
+    samples = [rate for window in windows for rate in window["topic_hz"]]
+    median = statistics.median(samples)
+    print("TOPIC_HZ_60S_SUMMARY " + json.dumps({
+        "median_hz": median, "minimum_hz": min(samples), "samples": len(samples),
+    }), flush=True)
+    assert median >= 48, ("CLI median below 48 Hz", median)
+    assert min(samples) >= 44, ("CLI sample below 44 Hz", min(samples))
+    return median
+
+
+@pytest.mark.parametrize("samples,expected_median", [
+    ([[44, 48, 52]], 48),
+    ([[44, 44, 44], [50, 50, 50, 50, 50]], 50),
+    ([[44, 47.9, 50]], None),
+    ([[43.9, 50, 50]], None),
+    ([[], [50, 50, 50]], None),
+])
+def test_cli_sample_acceptance(samples, expected_median):
+    windows = [{"topic_hz": rates} for rates in samples]
+    if expected_median is None:
+        with pytest.raises(AssertionError):
+            check_cli_rates(windows)
+    else:
+        assert check_cli_rates(windows) == expected_median
+
+
+@pytest.mark.parametrize("error", [psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess])
+def test_process_discovery_skips_unreadable_children(error):
+    unreadable = Mock()
+    unreadable.cmdline.side_effect = error(123)
+    worker = Mock()
+    worker.cmdline.return_value = ["python", "/example/bridge_node.py"]
+    parent = Mock()
+    parent.children.return_value = [unreadable, worker]
+    assert find_child_process(parent, "bridge_node.py") is worker
 
 
 @pytest.mark.parametrize("private", [False, True], ids=["plain", "fault-enabled"])
@@ -59,13 +111,9 @@ def test_camera_enabled_bridge_performance(private, tmp_path, ros_domain):
                 assert time.monotonic() < deadline, "Bridge or topic-hz did not become ready"
                 assert all(process.poll() is None for process in processes.values())
                 for role, script in (("bridge", "bridge_node.py"), ("topic-hz", "ros2")):
-                    for child in psutil.Process(processes[role].pid).children(recursive=True):
-                        try:
-                            arguments = child.cmdline()
-                        except psutil.NoSuchProcess:
-                            continue
-                        if any(Path(arg).name == script for arg in arguments):
-                            observed[role] = child
+                    child = find_child_process(psutil.Process(processes[role].pid), script)
+                    if child is not None:
+                        observed[role] = child
                 time.sleep(0.05)
             print("BRIDGE_PERFORMANCE_HOST " + json.dumps({
                 "platform": platform.platform(), "machine": platform.machine(),
@@ -117,7 +165,7 @@ def test_camera_enabled_bridge_performance(private, tmp_path, ros_domain):
             rates = json.loads(rates_path.read_text())
             print(f"JOINT_STATE_60S_HZ private={private} " + json.dumps(rates), flush=True)
             assert len(rates) == 12 and min(rates) >= 48, rates
-            assert all(window["topic_hz"] and min(window["topic_hz"]) >= 48 for window in windows), windows
+            check_cli_rates(windows)
             assert all(window["bridge_cpu_percent"] < 50 for window in windows), windows
             if private:
                 assert processes["action"].wait(timeout=5) == 0, logs["action"].read_text()

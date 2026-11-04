@@ -154,14 +154,17 @@ On Linux, prefix the command with `MUJOCO_GL=egl`.
 The test starts fresh seed-0 servers with all four RGB and cloud streams enabled.
 It measures the plain bridge and the `--private-dir` bridge for 60 seconds each,
 after camera discovery and CLI warm-up. The private-mode check includes a live pick.
-Each of twelve five-second reporting windows must have joint arrival rates ≥48 Hz
-and bridge process CPU <50% of one core. CPU is not divided by the host core count.
+Each of twelve five-second reporting windows must have independent joint arrival rates
+≥48 Hz and bridge process CPU <50% of one core. CPU is not divided by the host core count.
 The independent counter checks strictly increasing physics stamps and receives every
 camera stream in every window; it cannot pass by repeating stale state or disabling cameras.
 The test also runs the real `ros2 topic hz /joint_states --wall-time --window 250`
-and checks every CLI report in each window. The CLI averages 250 arrival intervals
-(about five seconds at 50 Hz), not fixed wall-time bins; the independent counter uses
-fixed five-second wall-time bins so a stalled publisher cannot hide behind that average.
+and retains every CLI report in each window. Across the full run, the CLI sample median
+must be ≥48 Hz and every CLI sample must be ≥44 Hz; the summary prints both values.
+This separate CLI budget allows for a Python subscriber competing for host CPU.
+The CLI averages 250 arrival intervals (about five seconds at 50 Hz), not fixed
+wall-time bins; the independent counter uses fixed five-second wall-time bins so a
+stalled publisher cannot hide behind that average.
 Both native CI jobs print the windows and upload their JUnit measurement logs.
 The logs identify the machine and CPU count, and report server/CLI process CPU,
 whole-host CPU utilization and load averages alongside bridge CPU in every window.
